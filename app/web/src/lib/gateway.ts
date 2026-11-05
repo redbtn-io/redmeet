@@ -50,6 +50,10 @@ async function post(
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
       'MCP-Protocol-Version': PROTOCOL_VERSION,
+      // The gateway's edge refuses non-browser user agents (the fleet's
+      // own mcp.py sets the same header for the same reason).
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
       Authorization: `Bearer ${config.mcpPat}`,
       ...(session.sessionId ? { 'Mcp-Session-Id': session.sessionId } : {}),
     },
