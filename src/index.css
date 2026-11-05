@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+html {
+    height: 100vh;
+}
+
+:root {
+    --gray-color: #d1d5db; /* Set your primary color here */
+    --secondary-color: #5658dd; /* Set your secondary color here */
+    font-family: 'Proxima Nova', sans-serif;
+}
+
+button {
+    cursor: pointer;
+}
+
+::-webkit-scrollbar {
+    width: 5px;
+    transform: scale(1);
+    animation: pulse 2s infinite;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: rgba(155, 155, 155, 0.5);
+    border-radius: 20px;
+    border: transparent;
+  }
+
+  @keyframes pulse {
+    0% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.7);
+    }
+
+    70% {
+        transform: scale(1);
+        box-shadow: 0 0 0 10px rgba(0, 0, 0, 0);
+    }
+
+    100% {
+        transform: scale(0.95);
+        box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+    }
+}
+
+.pulse {
+    animation: pulse 1.75s infinite;
+}
+
+.month-button {
+    padding: .75rem .75rem;
+    background-color: var(--gray-color);
+    opacity: 0.5;
+    border-radius: 40%;
+    vertical-align: text-top;
+    line-height: normal;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.unavailable-date {
+    background-color: var(--gray-color);
+    cursor: not-allowed;
+    opacity: 0.25;
+    border-radius: 50%;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.selected-date {
+    background-color: var(--primary-color); 
+    color: white; /* text-white */
+    cursor: pointer;
+    border-radius: 50%;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.available-date {
+    cursor: pointer;
+    border-radius: 50%;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+.available-date:hover {
+    background-color: var(--highlight-color);
+    color: white; /* text-white */
+}
+
+.off-month-date {
+    opacity: 0.25;
+}
+
+.input-field {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid var(--gray-color);
+    border-radius: 0.25rem;
+}
+
+#weekday-title > div {
+    user-select: none;
+    -webkit-user-select: none;
+}

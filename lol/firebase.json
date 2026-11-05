@@ -1,0 +1,11 @@
+{
+  "hosting": {
+    "public": ".",
+    "site": "gryskahamilton",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ]
+  }
+}
