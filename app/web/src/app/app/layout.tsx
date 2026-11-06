@@ -49,7 +49,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       />
 
       <aside className="fixed inset-y-0 left-0 z-40 hidden w-60 flex-col border-r border-border bg-bg-secondary/80 backdrop-blur md:flex">
-        <div className="flex items-center gap-3 px-4 pb-5 pt-6">
+        <Link href="/" className="flex items-center gap-3 px-4 pb-5 pt-6 transition hover:opacity-80">
           <img
             src="/icons/redbtn-logo.png"
             alt=""
@@ -59,7 +59,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
             <p className="truncate text-[10px] uppercase tracking-[0.2em] text-text-secondary">meet.redbtn.io</p>
             <h1 className="truncate text-lg font-semibold leading-tight">redMeet</h1>
           </div>
-        </div>
+        </Link>
 
         <nav className="flex-1 space-y-1 px-3">
           {NAV.map((item) => {
@@ -100,10 +100,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
       </aside>
 
       <header className="sticky top-0 z-40 flex items-center justify-between border-b border-border bg-bg-secondary/85 px-4 py-3 backdrop-blur md:hidden">
-        <div className="flex items-center gap-2.5">
+        <Link href="/" className="flex items-center gap-2.5 transition hover:opacity-80">
           <img src="/icons/redbtn-logo.png" alt="" className="h-8 w-8 rounded-lg" />
           <span className="font-semibold">redMeet</span>
-        </div>
+        </Link>
         <form action="/signout" method="post">
           <button
             type="submit"

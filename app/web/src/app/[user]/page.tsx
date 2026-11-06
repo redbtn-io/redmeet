@@ -47,10 +47,10 @@ export default async function BookingPage({
     <div className="min-h-screen bg-bg text-text-primary" style={style}>
       <header className="border-b border-border">
         <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-6 py-4">
-          <span className="flex items-center gap-2">
+          <Link href="/" className="flex items-center gap-2 transition hover:opacity-80">
             <img src="/icons/redbtn-logo.png" alt="" className="h-7 w-7 rounded-md" />
             <span className="text-sm font-medium">redMeet</span>
-          </span>
+          </Link>
           <p className="text-xs uppercase tracking-wider text-text-secondary">{host.timeZone}</p>
         </div>
       </header>

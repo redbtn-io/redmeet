@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import Link from 'next/link';
 import { notFound, redirect } from 'next/navigation';
 import type { CSSProperties } from 'react';
 
@@ -47,6 +48,15 @@ export default async function SchedulerPage({
 
   return (
     <div className="min-h-screen bg-bg pb-10 text-text-primary" style={style}>
+      <header className="border-b border-border">
+        <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-6 py-4">
+          <Link href="/" className="flex items-center gap-2 transition hover:opacity-80">
+            <img src="/icons/redbtn-logo.png" alt="" className="h-7 w-7 rounded-md" />
+            <span className="text-sm font-medium">redMeet</span>
+          </Link>
+          <p className="text-xs uppercase tracking-wider text-text-secondary">{host.timeZone}</p>
+        </div>
+      </header>
       <BookingFlow
         slug={host.slug}
         hostName={host.displayName}

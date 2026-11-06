@@ -1,4 +1,5 @@
 import { headers } from 'next/headers';
+import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
 import { signInUrl } from '@redbtn/redlabel/auth';
@@ -53,7 +54,7 @@ export default async function Landing() {
   return (
     <div className="flex min-h-screen flex-col">
       <main className="mx-auto w-full max-w-4xl flex-1 px-6 py-16">
-        <div className="flex items-center gap-4">
+        <Link href="/" className="flex items-center gap-4 transition hover:opacity-80">
           <img src="/icons/redbtn-logo.png" alt="" className="h-16 w-16 rounded-2xl" />
           <div>
             <p className="text-sm uppercase tracking-widest text-text-secondary">
@@ -61,19 +62,27 @@ export default async function Landing() {
             </p>
             <h1 className="mt-1 text-5xl font-semibold">redMeet</h1>
           </div>
-        </div>
+        </Link>
         <p className="mt-6 max-w-xl text-lg text-text-secondary">
-          Simple meeting scheduling. One link, your real calendar, guests
-          book without an account.
+          Simple meeting scheduling on your real calendar. One link,
+          guests book without an account.
         </p>
 
         <div className="mt-8">
-          <a
-            href={signIn}
-            className="inline-block rounded-xl bg-accent px-6 py-3 font-medium text-white transition hover:brightness-110 active:scale-[0.98]"
-          >
-            Get your booking link
-          </a>
+          <div className="flex flex-wrap items-center gap-3">
+            <a
+              href={signIn}
+              className="inline-block rounded-xl bg-accent px-6 py-3 font-medium text-white transition hover:brightness-110 active:scale-[0.98]"
+            >
+              Get your booking link
+            </a>
+            <a
+              href="/george"
+              className="inline-block rounded-xl border border-border px-6 py-3 font-medium text-text-primary transition hover:bg-bg-secondary active:scale-[0.98]"
+            >
+              See a live booking page
+            </a>
+          </div>
           <p className="mt-2 text-sm text-text-secondary">
             Sign in with your redbtn account to claim your link
           </p>
@@ -99,10 +108,10 @@ export default async function Landing() {
 
       <footer className="border-t border-border">
         <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center gap-x-8 gap-y-3 px-6 py-6">
-          <span className="flex items-center gap-2">
+          <Link href="/" className="flex items-center gap-2 transition hover:opacity-80">
             <img src="/icons/redbtn-logo.png" alt="" className="h-6 w-6 rounded-md" />
             <span className="text-sm font-medium">redMeet</span>
-          </span>
+          </Link>
           <nav className="flex flex-wrap gap-x-5 gap-y-1">
             {ECOSYSTEM.map((link) => (
               <a
