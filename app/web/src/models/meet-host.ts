@@ -11,13 +11,39 @@ import { model, models, Schema, Types, type Model } from 'mongoose';
  *
  * Calendar tenancy is PER HOST: `gatewayCredential` is the host's OWN
  * redbtn personal access token, sealed at rest (AES-256-GCM, see
- * lib/secrets.ts) and never serialised. Calendar calls run under it,
- * with `googleConnectionId` naming which of the host's own google
- * connections to act through; the gateway resolves that id against the
- * credential owner's connections only. A host with no credential has
- * no calendar: availability falls back to this app's own bookings and
- * says so.
+ * lib/secrets.ts) and never serialised. Calendar calls run under it.
+ * The gateway resolves connection ids against the credential owner's
+ * connections only.
+ *
+ * Calendar SCOPE is a set of (connection, calendar) pairs,
+ * `calendarSelection`, spanning ANY of the host's linked google
+ * accounts: availability merges free/busy across every ticked pair,
+ * and booking events are written to the single `calendarWriteTarget`
+ * pair. A connection is one linked google account, so a host who
+ * lives on several accounts (the normal case) ticks calendars across
+ * all of them. The older single-connection fields (`calendarIds`,
+ * `googleConnectionId`) are legacy: they describe the pre-expansion
+ * shape, are converted forward into a selection on first resolve
+ * (lib/calendar-auth.ts), and are kept only as a mirror for older
+ * readers. A host with no credential has no calendar: availability
+ * falls back to this app's own bookings and says so.
  */
+/** One ticked calendar: a calendar on one of the host's connections. */
+export interface CalendarSelectionEntryDoc {
+  connectionId: string;
+  calendarId: string;
+  /** Account email the calendar lives under, for grouped display. */
+  email: string;
+  /** Calendar summary at the time it was listed. */
+  summary: string;
+}
+
+/** The single (connection, calendar) pair booking events write to. */
+export interface CalendarWriteTargetDoc {
+  connectionId: string;
+  calendarId: string;
+}
+
 export interface MeetHostDoc {
   _id: Types.ObjectId;
   /** redauth userId of the owner. */
@@ -30,8 +56,21 @@ export interface MeetHostDoc {
   /** Hex colour, e.g. #dc2626. */
   color: string;
   timeZone: string;
-  /** Google calendar ids availability is read from. Default ['primary']. */
+  /**
+   * LEGACY: google calendar ids on the single legacy connection that
+   * availability was read from. Superseded by `calendarSelection`;
+   * kept as a flat mirror of the selection's calendar ids.
+   */
   calendarIds: string[];
+  /**
+   * The calendars that block slots, as (connection, calendar) pairs
+   * across ANY of the host's linked google accounts. Empty until the
+   * host connects and picks (or a migration builds it from the legacy
+   * fields).
+   */
+  calendarSelection: CalendarSelectionEntryDoc[];
+  /** Where confirmed booking events are written. One of the pairs. */
+  calendarWriteTarget?: CalendarWriteTargetDoc | null;
   /**
    * The host's own redbtn gateway credential (a personal access token),
    * sealed with lib/secrets.ts under this host's AAD. Null until the
@@ -39,18 +78,46 @@ export interface MeetHostDoc {
    */
   gatewayCredential?: string | null;
   /**
-   * Which of the host's own google connections calendar calls act
-   * through. Only ever set to an id that google_accounts_list returned
-   * under this host's own credential (enforced in the connect route).
+   * LEGACY: the host's default google connection, the account picked
+   * in the connect flow. Only ever set to an id that
+   * google_accounts_list returned under this host's own credential
+   * (enforced in the connect route). The full set of the host's usable
+   * connections is `googleConnectionIds`.
    */
   googleConnectionId?: string | null;
-  /** Email of the connected google account, for display in Settings. */
+  /** Email of the default google connection, for display in Settings. */
   googleConnectionEmail?: string | null;
+  /**
+   * Every google connection id linked under the host's credential, as
+   * returned by google_accounts_list under that same credential at
+   * connect (or migration) time. Selections may only name ids in a
+   * fresh listing under the credential; this stored set is the
+   * snapshot the picker renders from before re-listing.
+   */
+  googleConnectionIds: string[];
   /** When the host connected their calendar. Null when not connected. */
   calendarConnectedAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
+
+const calendarSelectionEntrySchema = new Schema<CalendarSelectionEntryDoc>(
+  {
+    connectionId: { type: String, required: true },
+    calendarId: { type: String, required: true },
+    email: { type: String, default: '' },
+    summary: { type: String, default: '' },
+  },
+  { _id: false },
+);
+
+const calendarWriteTargetSchema = new Schema<CalendarWriteTargetDoc>(
+  {
+    connectionId: { type: String, required: true },
+    calendarId: { type: String, required: true },
+  },
+  { _id: false },
+);
 
 const meetHostSchema = new Schema<MeetHostDoc>(
   {
@@ -62,9 +129,12 @@ const meetHostSchema = new Schema<MeetHostDoc>(
     color: { type: String, default: '#dc2626' },
     timeZone: { type: String, default: 'America/New_York' },
     calendarIds: { type: [String], default: ['primary'] },
+    calendarSelection: { type: [calendarSelectionEntrySchema], default: [] },
+    calendarWriteTarget: { type: calendarWriteTargetSchema, default: null },
     gatewayCredential: { type: String, default: null },
     googleConnectionId: { type: String, default: null },
     googleConnectionEmail: { type: String, default: null },
+    googleConnectionIds: { type: [String], default: [] },
     calendarConnectedAt: { type: Date, default: null },
   },
   { timestamps: true },

@@ -10,7 +10,10 @@ import {
 } from '@redmeet/core';
 
 import { createCalendarEvent, getBusyIntervals } from '@/lib/calendar';
-import { CalendarNotConnectedError, resolveHostCalendarAuth } from '@/lib/calendar-auth';
+import {
+  CalendarNotConnectedError,
+  resolveHostCalendarSelection,
+} from '@/lib/calendar-auth';
 import { getDb } from '@/lib/db';
 import { logger } from '@/lib/log';
 import { MeetBooking, type MeetBookingDoc } from '@/models/meet-booking';
@@ -19,13 +22,15 @@ import type { MeetTypeDoc } from '@/models/meet-type';
 
 /**
  * Booking orchestration. Availability is the original's slot math over
- * two busy sources: the host's real calendar (gateway free/busy, read
- * under the host's OWN credential and selected connection) and this
- * app's own bookings. If the host has no connected calendar, or the
- * gateway cannot answer, the app's own bookings still block their
- * slots and the answer is flagged degraded with `calendarConnected`
- * saying which case it is; availability never silently becomes
- * "everything is free", and it never reads anyone else's calendar.
+ * two busy sources: the host's real calendars (gateway free/busy, read
+ * under the host's OWN credential, merged across every ticked
+ * (connection, calendar) pair in their selection, which can span all
+ * of their linked google accounts) and this app's own bookings. If the
+ * host has no connected calendar, or a connection cannot answer, the
+ * app's own bookings still block their slots and the answer is
+ * flagged degraded with `calendarConnected` saying which case it is;
+ * availability never silently becomes "everything is free", and it
+ * never reads anyone else's calendar.
  */
 
 export interface AvailabilityResult {
@@ -50,17 +55,37 @@ export async function busyForWindow(
     startMs: b.start.getTime(),
     endMs: b.end.getTime(),
   }));
-  const auth = await resolveHostCalendarAuth(host);
-  if (!auth) {
+  const resolved = await resolveHostCalendarSelection(host);
+  if (!resolved) {
     return { busy, degraded: true, calendarConnected: false };
   }
+  // One free/busy query per connection, with that connection's header,
+  // merged into a single busy set. A connection that fails degrades
+  // the answer (its calendars may be under-blocking) but never sinks
+  // the others, and the failure is flagged, not hidden.
+  const byConnection = new Map<string, string[]>();
+  for (const entry of resolved.selection) {
+    const ids = byConnection.get(entry.connectionId) ?? [];
+    ids.push(entry.calendarId);
+    byConnection.set(entry.connectionId, ids);
+  }
   let degraded = false;
-  try {
-    const calendarBusy = await getBusyIntervals(auth, host.timeZone, host.calendarIds, timeMinMs, timeMaxMs);
-    busy.push(...calendarBusy);
-  } catch (error) {
-    degraded = true;
-    logger.warn('freebusy unavailable, using own bookings only', { error: String(error) });
+  for (const [connectionId, calendarIds] of byConnection) {
+    try {
+      const calendarBusy = await getBusyIntervals(
+        { token: resolved.token, connectionId },
+        host.timeZone,
+        calendarIds,
+        timeMinMs,
+        timeMaxMs,
+      );
+      busy.push(...calendarBusy);
+    } catch (error) {
+      degraded = true;
+      logger.warn('freebusy unavailable for one connection, continuing with the rest', {
+        error: String(error),
+      });
+    }
   }
   return { busy, degraded, calendarConnected: true };
 }
@@ -118,8 +143,8 @@ export async function createBooking(
     status: 'pending_calendar',
   });
 
-  const auth = await resolveHostCalendarAuth(host);
-  if (!auth) {
+  const resolved = await resolveHostCalendarSelection(host);
+  if (!resolved) {
     // No calendar to write to: the booking stands as a redMeet booking
     // (it blocks the slot), honestly flagged as not on a calendar. It
     // must NOT be written to anyone else's calendar.
@@ -131,9 +156,9 @@ export async function createBooking(
 
   try {
     const { eventId, calendarId } = await createCalendarEvent(
-      auth,
+      { token: resolved.token, connectionId: resolved.writeTarget.connectionId },
       host.timeZone,
-      host.calendarIds[0] ?? 'primary',
+      resolved.writeTarget.calendarId,
       {
         summary: `${type.name} with ${input.name}`,
         description: [

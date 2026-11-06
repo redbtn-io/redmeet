@@ -14,15 +14,21 @@ export const dynamic = 'force-dynamic';
 /**
  * POST /api/v0/calendar/connect, step 2 of connecting a calendar.
  *
- * Stores the host's own gateway credential, sealed at rest, plus the
- * google connection it acts through. Ownership is proven twice over
- * before anything is written:
+ * Stores the host's own gateway credential, sealed at rest. Ownership
+ * is proven twice over before anything is written:
  *
  *   1. whoami: the token's owner is the signed-in host.
  *   2. The chosen connectionId is re-listed under THAT token and must
  *      be in the list. An id from anywhere else (another user's list,
  *      a guess, the old app level default) is refused, so a host can
  *      never be pointed at a connection that is not theirs.
+ *
+ * The chosen account becomes the host's default connection, and EVERY
+ * account in that same listing is recorded as a usable connection:
+ * the calendar selection spans all of the host's linked google
+ * accounts, and each id in it was proven under this same token here.
+ * The starting selection is the default connection's primary
+ * calendar; the host widens it in Settings.
  *
  * The raw token is never logged; only its sealed form is stored.
  */
@@ -78,23 +84,34 @@ export async function POST(request: Request): Promise<NextResponse> {
   host.gatewayCredential = sealSecret(token, credentialAad(String(host._id)));
   host.googleConnectionId = chosen.connectionId;
   host.googleConnectionEmail = chosen.email;
+  host.googleConnectionIds = accounts.map((a) => a.connectionId);
   host.calendarConnectedAt = new Date();
 
-  // Default the blocking calendars to the connection's primary
-  // calendar when the host did not pick a set explicitly.
+  // The starting selection is the default connection's primary
+  // calendar, as the write target too. Settings widens it across all
+  // of the host's connections from here.
   let calendars: Awaited<ReturnType<typeof listCalendars>> = [];
   try {
     calendars = await listCalendars({ token, connectionId: chosen.connectionId });
   } catch (error) {
     logger.warn('calendar list after connect failed', { error: String(error) });
   }
-  if (parsed.data.calendarIds?.length) {
-    const known = new Set(calendars.map((c) => c.id));
-    const picked = parsed.data.calendarIds.filter((id) => id === 'primary' || known.has(id));
-    if (picked.length) host.calendarIds = picked;
+  const primary = calendars.find((c) => c.primary) ?? calendars[0];
+  if (primary) {
+    host.calendarSelection = [
+      {
+        connectionId: chosen.connectionId,
+        calendarId: primary.id,
+        email: chosen.email,
+        summary: primary.summary,
+      },
+    ];
+    host.calendarWriteTarget = { connectionId: chosen.connectionId, calendarId: primary.id };
+    host.calendarIds = [primary.id];
   } else {
-    const primary = calendars.find((c) => c.primary);
-    host.calendarIds = [primary ? primary.id : 'primary'];
+    host.calendarSelection = [];
+    host.calendarWriteTarget = null;
+    host.calendarIds = ['primary'];
   }
   await host.save();
 
@@ -106,8 +123,9 @@ export async function POST(request: Request): Promise<NextResponse> {
 
 /**
  * DELETE /api/v0/calendar/connect, disconnect the calendar. The
- * sealed credential and the connection choice are wiped; availability
- * returns to own-bookings-only until the host connects again.
+ * sealed credential, the connection set, and the selection are
+ * wiped; availability returns to own-bookings-only until the host
+ * connects again.
  */
 export async function DELETE(request: Request): Promise<NextResponse> {
   const gated = await gate(request, { mutate: true });
@@ -116,6 +134,10 @@ export async function DELETE(request: Request): Promise<NextResponse> {
   host.gatewayCredential = null;
   host.googleConnectionId = null;
   host.googleConnectionEmail = null;
+  host.googleConnectionIds = [];
+  host.calendarSelection = [];
+  host.calendarWriteTarget = null;
+  host.calendarIds = ['primary'];
   host.calendarConnectedAt = null;
   await host.save();
   return NextResponse.json({ host: hostPrivateJson(host) });

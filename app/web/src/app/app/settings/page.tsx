@@ -3,6 +3,13 @@
 import { useEffect, useState } from 'react';
 import { Card, PageHeader } from '../ui';
 
+interface SelectionEntry {
+  connectionId: string;
+  calendarId: string;
+  email: string;
+  summary: string;
+}
+
 interface Host {
   slug: string;
   displayName: string;
@@ -10,8 +17,11 @@ interface Host {
   color: string;
   timeZone: string;
   calendarIds: string[];
+  calendarSelection: SelectionEntry[];
+  calendarWriteTarget: { connectionId: string; calendarId: string } | null;
   googleConnectionId: string | null;
   googleConnectionEmail: string | null;
+  googleConnectionIds: string[];
   calendarConnected: boolean;
   calendarConnectedAt: string | null;
   bookingUrl: string;
@@ -40,9 +50,22 @@ interface CalendarItem {
   accessRole: string;
 }
 
+interface AccountGroup {
+  connectionId: string;
+  email: string;
+  isDefault: boolean;
+  status: string;
+  calendars: CalendarItem[];
+  error?: string;
+}
+
 const inputCls =
   'w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text-primary placeholder:text-text-secondary/60';
 const labelCls = 'mb-1 block text-xs font-medium uppercase tracking-wider text-text-secondary';
+
+function pairKey(connectionId: string, calendarId: string): string {
+  return `${connectionId}|${calendarId}`;
+}
 
 /**
  * Settings: profile (slug, name, bio, brand colour), calendar
@@ -51,9 +74,11 @@ const labelCls = 'mb-1 block text-xs font-medium uppercase tracking-wider text-t
  * The calendar connection is per host and self serve: the host links
  * Google in redbtn Connections, mints their own personal access token
  * in redbtn Settings, and pastes it here. redMeet proves the token is
- * theirs, lists the google accounts under it, and stores it sealed.
- * From then on their availability and booking writes run under their
- * own credential, on their own calendar.
+ * theirs, and stores it sealed. From then on their availability and
+ * booking writes run under their own credential, across every google
+ * account they have linked: the calendar picker spans ALL of their
+ * connections, grouped by account, because that is where a real
+ * schedule actually lives.
  */
 export default function Settings() {
   const [host, setHost] = useState<Host | null>(null);
@@ -299,31 +324,47 @@ function CalendarCard({
   setHost: (h: Host) => void;
   onSaved: (note: string) => void;
 }) {
-  const [calendars, setCalendars] = useState<CalendarItem[]>([]);
-  const [calendarsText, setCalendarsText] = useState('');
+  const [groups, setGroups] = useState<AccountGroup[] | null>(null);
+  const [groupsError, setGroupsError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [writeKey, setWriteKey] = useState('');
   const [token, setToken] = useState('');
   const [accounts, setAccounts] = useState<GoogleAccount[] | null>(null);
   const [picked, setPicked] = useState('');
   const [busy, setBusy] = useState(false);
   const [flowError, setFlowError] = useState<string | null>(null);
 
+  // Load every connection and its calendars, plus the stored
+  // selection, whenever the connection state changes. The server
+  // forward-migrates legacy records as part of this read, so what is
+  // ticked here is what availability uses.
   useEffect(() => {
-    setCalendarsText((host.calendarIds ?? ['primary']).join(', '));
     if (!host.calendarConnected) {
-      setCalendars([]);
+      setGroups(null);
+      setSelected([]);
+      setWriteKey('');
       return;
     }
     let live = true;
     fetch('/api/v0/calendar/calendars')
       .then((r) => r.json())
       .then((data) => {
-        if (live) setCalendars(data.calendars ?? []);
+        if (!live) return;
+        setGroups(data.accounts ?? []);
+        setGroupsError(data.error ?? null);
+        const sel: SelectionEntry[] = data.selection ?? host.calendarSelection ?? [];
+        setSelected(sel.map((e) => pairKey(e.connectionId, e.calendarId)));
+        const wt = data.writeTarget ?? host.calendarWriteTarget;
+        setWriteKey(wt ? pairKey(wt.connectionId, wt.calendarId) : '');
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (live) setGroupsError('Could not load your calendars. Try again.');
+      });
     return () => {
       live = false;
     };
-  }, [host.calendarConnected, host.calendarIds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [host.calendarConnected]);
 
   async function validateToken() {
     setFlowError(null);
@@ -389,16 +430,53 @@ function CalendarCard({
     }
   }
 
+  function togglePair(key: string, on: boolean) {
+    const next = on ? [...selected, key] : selected.filter((k) => k !== key);
+    setSelected(next);
+    if (!on && writeKey === key) {
+      setWriteKey(next[0] ?? '');
+    }
+    if (on && !next.includes(writeKey)) {
+      setWriteKey(writeKey || key);
+    }
+  }
+
+  function pickedEntries(): SelectionEntry[] {
+    const entries: SelectionEntry[] = [];
+    for (const group of groups ?? []) {
+      for (const cal of group.calendars) {
+        if (selected.includes(pairKey(group.connectionId, cal.id))) {
+          entries.push({
+            connectionId: group.connectionId,
+            calendarId: cal.id,
+            email: group.email,
+            summary: cal.summary,
+          });
+        }
+      }
+    }
+    return entries;
+  }
+
   async function saveCalendars(e: React.FormEvent) {
     e.preventDefault();
-    const ids =
-      calendars.length > 0
-        ? calendars.filter((c) => host.calendarIds.includes(c.id)).map((c) => c.id)
-        : calendarsText.split(',').map((s) => s.trim()).filter(Boolean);
+    setFlowError(null);
+    const entries = pickedEntries();
+    if (!entries.length) {
+      setFlowError('Tick at least one calendar to block slots, or disconnect your calendar.');
+      return;
+    }
+    const wtEntry =
+      entries.find((en) => pairKey(en.connectionId, en.calendarId) === writeKey) ?? entries[0]!;
     const res = await fetch('/api/v0/profile', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ calendarIds: ids.length ? ids : ['primary'] }),
+      body: JSON.stringify({
+        calendarSelection: {
+          calendars: entries,
+          writeTarget: { connectionId: wtEntry.connectionId, calendarId: wtEntry.calendarId },
+        },
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
@@ -409,12 +487,7 @@ function CalendarCard({
     }
   }
 
-  function toggleCalendar(id: string, on: boolean) {
-    const next = on
-      ? [...host.calendarIds, id]
-      : host.calendarIds.filter((c) => c !== id);
-    setHost({ ...host, calendarIds: next.length ? next : [id] });
-  }
+  const entriesNow = pickedEntries();
 
   return (
     <Card>
@@ -439,45 +512,83 @@ function CalendarCard({
         <form className="space-y-4" onSubmit={saveCalendars}>
           <p className="text-sm text-text-secondary">
             Connected as{' '}
-            <span className="text-text-primary">{host.googleConnectionEmail ?? 'your google account'}</span>.
-            Availability is read from this account, under your own redbtn credential, and
-            bookings are written to it.
+            <span className="text-text-primary">{host.googleConnectionEmail ?? 'your google account'}</span>
+            {groups && groups.length > 1 ? (
+              <>, with {groups.length} google accounts linked under your redbtn credential</>
+            ) : null}
+            . Availability is read from every calendar you tick below, across all of your
+            linked accounts, and bookings are written to the one calendar you pick as the
+            write target.
           </p>
           <div>
             <span className={labelCls}>Calendars that block slots</span>
-            {calendars.length > 0 ? (
-              <div className="space-y-2">
-                {calendars.map((c) => (
-                  <label key={c.id} className="flex items-center gap-2 text-sm">
-                    <input
-                      type="checkbox"
-                      checked={host.calendarIds.includes(c.id)}
-                      onChange={(e) => toggleCalendar(c.id, e.target.checked)}
-                    />
-                    <span className="truncate">
-                      {c.summary}
-                      {c.primary ? ' (primary)' : ''}
-                    </span>
-                  </label>
+            {groups === null ? (
+              <p className="text-sm text-text-secondary">Loading your calendars...</p>
+            ) : groups.length === 0 ? (
+              <p className="text-sm text-text-secondary">
+                {groupsError ?? 'No google accounts came back under your credential.'}
+              </p>
+            ) : (
+              <div className="space-y-4">
+                {groups.map((group) => (
+                  <div key={group.connectionId}>
+                    <p className="mb-1.5 text-sm font-medium">
+                      {group.email}
+                      {group.isDefault ? (
+                        <span className="ml-2 text-xs font-normal text-text-secondary">(default)</span>
+                      ) : null}
+                    </p>
+                    {group.error ? (
+                      <p className="text-xs text-text-secondary">{group.error}</p>
+                    ) : group.calendars.length === 0 ? (
+                      <p className="text-xs text-text-secondary">No calendars on this account.</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {group.calendars.map((c) => {
+                          const key = pairKey(group.connectionId, c.id);
+                          return (
+                            <label key={key} className="flex items-center gap-2 text-sm">
+                              <input
+                                type="checkbox"
+                                checked={selected.includes(key)}
+                                onChange={(e) => togglePair(key, e.target.checked)}
+                              />
+                              <span className="truncate">
+                                {c.summary}
+                                {c.primary ? ' (primary)' : ''}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                 ))}
                 <p className="text-xs text-text-secondary">
-                  Busy time on any ticked calendar closes those slots. Bookings are written
-                  to the first ticked calendar.
+                  Busy time on any ticked calendar closes those slots, whichever account
+                  the calendar lives on.
                 </p>
               </div>
-            ) : (
-              <>
-                <input
-                  className={inputCls}
-                  value={calendarsText}
-                  onChange={(e) => setCalendarsText(e.target.value)}
-                  placeholder="primary"
-                />
-                <p className="mt-1 text-xs text-text-secondary">
-                  Comma separated calendar ids. Busy time on any of them closes those slots.
-                </p>
-              </>
             )}
+          </div>
+          <div>
+            <label className={labelCls} htmlFor="writeTarget">Bookings are written to</label>
+            <select
+              id="writeTarget"
+              className={inputCls}
+              value={writeKey}
+              onChange={(e) => setWriteKey(e.target.value)}
+            >
+              {entriesNow.length === 0 ? (
+                <option value="">Tick a calendar first</option>
+              ) : (
+                entriesNow.map((en) => (
+                  <option key={pairKey(en.connectionId, en.calendarId)} value={pairKey(en.connectionId, en.calendarId)}>
+                    {en.summary} ({en.email})
+                  </option>
+                ))
+              )}
+            </select>
           </div>
           <p className="text-xs text-text-secondary">
             Time zone: {host.timeZone}. Booking windows: weekdays 10:00AM to 8:00PM,
@@ -576,6 +687,10 @@ function CalendarCard({
                     </option>
                   ))}
                 </select>
+                <p className="mt-1 text-xs text-text-secondary">
+                  This becomes your default account. After connecting you can tick
+                  calendars on every linked account, not just this one.
+                </p>
               </div>
               <button
                 type="button"

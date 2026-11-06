@@ -161,6 +161,42 @@ export interface CalendarSummary {
   timeZone: string | null;
 }
 
+export interface ConnectionCalendars {
+  connectionId: string;
+  email: string;
+  isDefault: boolean;
+  status: string;
+  calendars: CalendarSummary[];
+  /** Set when this one connection's list failed; the rest still load. */
+  error?: string;
+}
+
+/**
+ * Every calendar on EVERY google connection the owner of `token` has
+ * linked, grouped by connection. This is the settings picker's data
+ * path: accounts come from google_accounts_list under the token
+ * (the only sanctioned source of connection ids for it), and each
+ * connection's calendars are listed with that connection's per-call
+ * header. One connection failing does not sink the others.
+ */
+export async function listCalendarsByConnection(token: string): Promise<ConnectionCalendars[]> {
+  const accounts = await listGoogleAccounts(token);
+  const groups: ConnectionCalendars[] = [];
+  for (const account of accounts) {
+    try {
+      const calendars = await listCalendars({ token, connectionId: account.connectionId });
+      groups.push({ ...account, calendars });
+    } catch (error) {
+      logger.warn('calendar list failed for one connection', {
+        connectionEmail: account.email,
+        error: String(error),
+      });
+      groups.push({ ...account, calendars: [], error: 'Calendar list unavailable for this account' });
+    }
+  }
+  return groups;
+}
+
 /** The calendars visible under an auth (a host credential plus its
  *  selected connection), for the settings calendar picker. */
 export async function listCalendars(auth: GatewayAuth): Promise<CalendarSummary[]> {

@@ -64,17 +64,56 @@ export const hexColorSchema = z
   .string()
   .regex(/^#[0-9a-fA-F]{6}$/, 'Use a hex colour like #dc2626');
 
+/**
+ * One calendar a host has ticked to block slots: a (connection,
+ * calendar) pair. A host's connections are their linked google
+ * accounts under their own redbtn account; the pair is the unit
+ * because the same calendar id means nothing without the connection
+ * it lives on. `email` and `summary` are display metadata captured
+ * when the pair was listed under the host's own credential.
+ */
+export const calendarSelectionEntrySchema = z.object({
+  connectionId: z.string().min(1).max(200),
+  calendarId: z.string().min(1).max(500),
+  email: z.string().max(320).default(''),
+  summary: z.string().max(300).default(''),
+});
+export type CalendarSelectionEntry = z.infer<typeof calendarSelectionEntrySchema>;
+
+/** The calendar booking events are written to: one selected pair. */
+export const calendarWriteTargetSchema = z.object({
+  connectionId: z.string().min(1).max(200),
+  calendarId: z.string().min(1).max(500),
+});
+export type CalendarWriteTarget = z.infer<typeof calendarWriteTargetSchema>;
+
+/**
+ * A host's full calendar selection: every ticked (connection,
+ * calendar) pair across ANY of their connections, plus the single
+ * write target. The server re-proves every connectionId against the
+ * host's own credential before storing any of this (see the profile
+ * route), so the schema only shapes the payload.
+ */
+export const calendarSelectionSchema = z.object({
+  calendars: z.array(calendarSelectionEntrySchema).max(60),
+  writeTarget: calendarWriteTargetSchema.nullable().default(null),
+});
+export type CalendarSelection = z.infer<typeof calendarSelectionSchema>;
+
 export const profilePatchSchema = z.object({
   slug: z.string().min(2).max(40).optional(),
   displayName: z.string().min(1).max(80).optional(),
   bio: z.string().max(500).optional(),
   color: hexColorSchema.optional(),
-  calendarIds: z.array(z.string().min(1).max(200)).max(20).optional(),
-  // NOTE: googleConnectionId is deliberately NOT patchable here. A
-  // connection id may only land on a host through the calendar connect
-  // flow, which proves the id was listed under the host's own
-  // credential. Accepting it from a generic profile patch would let a
-  // caller point a host at a connection that was never theirs.
+  calendarSelection: calendarSelectionSchema.optional(),
+  // NOTE: connection ids are deliberately NOT patchable on their own
+  // here. A connection id may only ever be stored when it came from a
+  // list returned under the host's own credential: the connect flow
+  // proves that for the credential itself, and the profile route
+  // re-proves every connectionId inside a calendarSelection against
+  // google_accounts_list under the host's stored credential. Accepting
+  // a bare connection id from a generic patch would let a caller point
+  // a host at a connection that was never theirs.
 });
 export type ProfilePatch = z.infer<typeof profilePatchSchema>;
 
@@ -86,13 +125,15 @@ export const calendarValidateSchema = z.object({
 });
 export type CalendarValidate = z.infer<typeof calendarValidateSchema>;
 
-/** Step 2: store the credential and the chosen connection. The
- *  connectionId must be one the validate step listed under this same
- *  token; the route re-lists and checks before it stores anything. */
+/** Step 2: store the credential. The connectionId is the account the
+ *  host picked in step 1 (their default connection); it must be one
+ *  the validate step listed under this same token, and the route
+ *  re-lists and checks before it stores anything. Every account in
+ *  that list is recorded as a usable connection, because the calendar
+ *  picker spans all of the host's connections, not just this one. */
 export const calendarConnectSchema = z.object({
   token: z.string().min(10).max(500),
   connectionId: z.string().min(1).max(200),
-  calendarIds: z.array(z.string().min(1).max(200)).max(20).optional(),
 });
 export type CalendarConnect = z.infer<typeof calendarConnectSchema>;
 

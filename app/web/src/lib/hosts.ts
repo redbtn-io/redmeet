@@ -39,7 +39,10 @@ export async function ensureHost(user: SessionUser): Promise<HydratedDocument<Me
     color: '#dc2626',
     timeZone: 'America/New_York',
     calendarIds: ['primary'],
+    calendarSelection: [],
+    calendarWriteTarget: null,
     googleConnectionId: null,
+    googleConnectionIds: [],
   });
   await MeetType.create({
     hostId: host._id,
@@ -73,8 +76,21 @@ export function hostPrivateJson(host: MeetHostDoc) {
     color: host.color,
     timeZone: host.timeZone,
     calendarIds: host.calendarIds,
+    calendarSelection: (host.calendarSelection ?? []).map((e) => ({
+      connectionId: e.connectionId,
+      calendarId: e.calendarId,
+      email: e.email ?? '',
+      summary: e.summary ?? '',
+    })),
+    calendarWriteTarget: host.calendarWriteTarget
+      ? {
+          connectionId: host.calendarWriteTarget.connectionId,
+          calendarId: host.calendarWriteTarget.calendarId,
+        }
+      : null,
     googleConnectionId: host.googleConnectionId ?? null,
     googleConnectionEmail: host.googleConnectionEmail ?? null,
+    googleConnectionIds: host.googleConnectionIds ?? [],
     // The credential itself is NEVER serialised; only whether the host
     // has a connected calendar, so the UI can label it honestly.
     calendarConnected: typeof host.gatewayCredential === 'string' && host.gatewayCredential.length > 0,
