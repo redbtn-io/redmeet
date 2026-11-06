@@ -17,9 +17,12 @@ import { logger } from '@/lib/log';
  * header selects which of THAT caller's google connections the call
  * resolves against. The redbtn token exchange enforces ownership: a
  * connection id that is not the caller's own comes back as an error.
- * Sessions are therefore keyed by a fingerprint of the credential, one
- * session per (namespace, credential), never shared across hosts. A
- * credential value is never logged; the fingerprint is a hash prefix.
+ * Sessions are keyed by a fingerprint of the credential, one session
+ * per (namespace, credential). A session carries ONLY the bearer: the
+ * connection id is a per-call header, never session state, because one
+ * credential can legitimately select different connections on
+ * different calls (two hosts mid-migration, a reconnect). A credential
+ * value is never logged; the fingerprint is a hash prefix.
  */
 
 const PROTOCOL_VERSION = '2025-06-18';
@@ -36,7 +39,9 @@ interface GatewaySession {
   sessionId: string | null;
   nextId: number;
   ready: Promise<void> | null;
-  auth: GatewayAuth;
+  /** The bearer for this session. The connection selection is NOT
+   *  stored here; it travels per call (see `post`). */
+  token: string;
 }
 
 const sessions = new Map<string, GatewaySession>();
@@ -45,11 +50,11 @@ function fingerprint(token: string): string {
   return createHash('sha256').update(token).digest('hex').slice(0, 16);
 }
 
-function sessionFor(namespace: string, auth: GatewayAuth): GatewaySession {
-  const key = `${namespace}:${fingerprint(auth.token)}`;
+function sessionFor(namespace: string, token: string): GatewaySession {
+  const key = `${namespace}:${fingerprint(token)}`;
   let s = sessions.get(key);
   if (!s) {
-    s = { sessionId: null, nextId: 0, ready: null, auth };
+    s = { sessionId: null, nextId: 0, ready: null, token };
     sessions.set(key, s);
   }
   return s;
@@ -65,6 +70,7 @@ async function post(
   namespace: string,
   session: GatewaySession,
   payload: Record<string, unknown>,
+  connectionId?: string | null,
 ): Promise<{ messages: RpcMessage[]; sessionId: string | null }> {
   const config = getConfig();
   const res = await fetch(`${config.mcpGatewayUrl}/${namespace}`, {
@@ -77,14 +83,12 @@ async function post(
       // own mcp.py sets the same header for the same reason).
       'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      Authorization: `Bearer ${session.auth.token}`,
+      Authorization: `Bearer ${session.token}`,
       // Per-call account selection: stateless, and the gateway resolves
       // it against the bearer's own connections only. This replaces the
       // old google_account_use call, which mutated the user's account
       // level default connection as a side effect.
-      ...(session.auth.connectionId
-        ? { 'x-redbtn-connection-id': session.auth.connectionId }
-        : {}),
+      ...(connectionId ? { 'x-redbtn-connection-id': connectionId } : {}),
       ...(session.sessionId ? { 'Mcp-Session-Id': session.sessionId } : {}),
     },
     body: JSON.stringify(payload),
@@ -117,11 +121,12 @@ async function rpc(
   session: GatewaySession,
   method: string,
   params?: Record<string, unknown>,
+  connectionId?: string | null,
 ): Promise<unknown> {
   const id = ++session.nextId;
   const payload: Record<string, unknown> = { jsonrpc: '2.0', id, method };
   if (params !== undefined) payload.params = params;
-  const { messages, sessionId } = await post(namespace, session, payload);
+  const { messages, sessionId } = await post(namespace, session, payload, connectionId);
   if (sessionId) session.sessionId = sessionId;
   const message = messages.find((m) => m.id === id);
   if (!message) throw new Error(`gateway returned no response for ${method}`);
@@ -164,13 +169,19 @@ export async function callGatewayTool<T = unknown>(
   args: Record<string, unknown>,
   auth: GatewayAuth,
 ): Promise<T> {
-  const session = sessionFor(namespace, auth);
+  const session = sessionFor(namespace, auth.token);
   try {
     await ensureOpen(namespace, session);
-    const result = (await rpc(namespace, session, 'tools/call', {
-      name: tool,
-      arguments: args,
-    })) as { content?: Array<{ type: string; text?: string }>; isError?: boolean };
+    const result = (await rpc(
+      namespace,
+      session,
+      'tools/call',
+      {
+        name: tool,
+        arguments: args,
+      },
+      auth.connectionId,
+    )) as { content?: Array<{ type: string; text?: string }>; isError?: boolean };
     const text = result?.content?.find((c) => c.type === 'text')?.text;
     if (result?.isError) {
       throw new Error(`gateway tool ${tool} failed: ${(text ?? '').slice(0, 300)}`);
