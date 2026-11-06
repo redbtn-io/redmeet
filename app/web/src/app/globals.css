@@ -112,9 +112,10 @@
 }
 
 /* ---------- redMeet public booking surface ----------
- * Ported from the original 2025 app (src/index.css). The booking pages
- * are light cards dressed in the HOST's colour, set as --primary-color
- * and --highlight-color on the page wrapper.
+ * Shape ported from the original 2025 app (src/index.css); the styling
+ * is the modern house system: dark flat surfaces, hairline borders,
+ * the HOST's colour (set as --primary-color and --highlight-color on
+ * the page wrapper) as the only accent. No drop shadows.
  */
 
 .pulse {
@@ -123,30 +124,38 @@
 
 @keyframes rb-pulse-ring {
   0% {
-    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0.35);
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.35);
   }
   70% {
-    box-shadow: 0 0 0 10px rgba(0, 0, 0, 0);
+    box-shadow: 0 0 0 10px rgba(255, 255, 255, 0);
   }
   100% {
-    box-shadow: 0 0 0 0 rgba(0, 0, 0, 0);
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
   }
 }
 
 .month-button {
   padding: 0.75rem;
-  background-color: #d1d5db;
-  opacity: 0.6;
-  border-radius: 40%;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  opacity: 0.85;
+  border-radius: 999px;
   line-height: normal;
   cursor: pointer;
   user-select: none;
+  transition: opacity 0.15s ease, border-color 0.15s ease;
+}
+
+.month-button:hover {
+  opacity: 1;
+  border-color: var(--text-secondary);
 }
 
 .unavailable-date {
-  background-color: #d1d5db;
+  color: var(--text-secondary);
   cursor: not-allowed;
-  opacity: 0.25;
+  opacity: 0.3;
   border-radius: 50%;
   user-select: none;
 }
@@ -160,9 +169,11 @@
 }
 
 .available-date {
+  color: var(--text-primary);
   cursor: pointer;
   border-radius: 50%;
   user-select: none;
+  transition: background-color 0.15s ease;
 }
 
 .available-date:hover {
@@ -171,14 +182,19 @@
 }
 
 .off-month-date {
-  opacity: 0.25;
+  opacity: 0.3;
 }
 
 .input-field {
   width: 100%;
-  padding: 0.5rem;
-  border: 1px solid #d1d5db;
-  border-radius: 0.25rem;
-  background: white;
-  color: #111827;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--bg);
+  color: var(--text-primary);
+}
+
+.input-field::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.6;
 }

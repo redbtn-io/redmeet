@@ -27,11 +27,12 @@ export async function GET(
   const type = await MeetType.findOne({ hostId: host._id, slug: meeting, active: true });
   if (!type) return notFound('That meeting type is not bookable');
 
-  const { slots, degraded } = await availabilityFor(host, type, date);
+  const { slots, degraded, calendarConnected } = await availabilityFor(host, type, date);
   return NextResponse.json({
     date,
     timeZone: host.timeZone,
     degraded,
+    calendarConnected,
     times: slots.map((s) => s.label),
   });
 }

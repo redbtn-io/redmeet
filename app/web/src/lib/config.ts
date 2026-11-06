@@ -18,11 +18,21 @@ export interface Config {
   /** MCP gateway the calendar client talks to redbtn connections through. */
   mcpGatewayUrl: string;
   /**
-   * Platform PAT (rpat) for the gateway. In v1 this is George's PAT, so
-   * calendar operations act on his linked Google accounts (host #1).
-   * Never logged.
+   * Platform PAT (rpat) for the gateway. This is the MIGRATION SOURCE
+   * only: whichever host owns this PAT gets it sealed into their own
+   * host record (see lib/hosts.ts), after which every calendar call
+   * runs under a per-host credential and this value is never used as a
+   * caller identity again. Never logged.
    */
   mcpPat: string | null;
+  /**
+   * Keyring for sealing per-host credentials at rest, current key first:
+   * REDMEET_ENCRYPTION_KEY, then REDMEET_ENCRYPTION_KEY_PREVIOUS. Same
+   * shape as accounts' SSO_ENCRYPTION_KEY (64 hex chars). Never logged.
+   */
+  encryptionKeys: Array<string | null>;
+  /** The redbtn hub API, for the PAT whoami probe (/api/auth/me). */
+  redbtnApiUrl: string;
 }
 
 let cached: Config | null = null;
@@ -45,6 +55,8 @@ export function getConfig(): Config {
       authMongoUri: process.env.AUTH_MONGODB_URI ?? null,
       mcpGatewayUrl: (process.env.MCP_GATEWAY_URL ?? 'https://mcp.redbtn.io').replace(/\/+$/, ''),
       mcpPat: envOrNull('REDMEET_MCP_PAT'),
+      encryptionKeys: [envOrNull('REDMEET_ENCRYPTION_KEY'), envOrNull('REDMEET_ENCRYPTION_KEY_PREVIOUS')],
+      redbtnApiUrl: (process.env.REDBTN_API_URL ?? 'https://app.redbtn.io').replace(/\/+$/, ''),
     };
   }
   return cached;

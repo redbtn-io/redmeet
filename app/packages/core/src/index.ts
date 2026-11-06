@@ -70,9 +70,31 @@ export const profilePatchSchema = z.object({
   bio: z.string().max(500).optional(),
   color: hexColorSchema.optional(),
   calendarIds: z.array(z.string().min(1).max(200)).max(20).optional(),
-  googleConnectionId: z.string().max(120).nullable().optional(),
+  // NOTE: googleConnectionId is deliberately NOT patchable here. A
+  // connection id may only land on a host through the calendar connect
+  // flow, which proves the id was listed under the host's own
+  // credential. Accepting it from a generic profile patch would let a
+  // caller point a host at a connection that was never theirs.
 });
 export type ProfilePatch = z.infer<typeof profilePatchSchema>;
+
+/** Step 1 of connecting a calendar: the host pastes their own redbtn
+ *  personal access token so the app can list the google accounts that
+ *  token owns. The token is validated, never stored, at this step. */
+export const calendarValidateSchema = z.object({
+  token: z.string().min(10).max(500),
+});
+export type CalendarValidate = z.infer<typeof calendarValidateSchema>;
+
+/** Step 2: store the credential and the chosen connection. The
+ *  connectionId must be one the validate step listed under this same
+ *  token; the route re-lists and checks before it stores anything. */
+export const calendarConnectSchema = z.object({
+  token: z.string().min(10).max(500),
+  connectionId: z.string().min(1).max(200),
+  calendarIds: z.array(z.string().min(1).max(200)).max(20).optional(),
+});
+export type CalendarConnect = z.infer<typeof calendarConnectSchema>;
 
 export const meetingTypeInputSchema = z.object({
   slug: z

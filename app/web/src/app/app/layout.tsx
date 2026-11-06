@@ -53,7 +53,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <img
             src="/icons/redbtn-logo.png"
             alt=""
-            className="h-9 w-9 shrink-0 rounded-xl shadow-lg shadow-accent/20"
+            className="h-9 w-9 shrink-0 rounded-xl"
           />
           <div className="min-w-0">
             <p className="truncate text-[10px] uppercase tracking-[0.2em] text-text-secondary">meet.redbtn.io</p>
@@ -70,7 +70,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
                 href={item.href}
                 className={`flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition active:scale-[0.98] ${
                   active
-                    ? 'bg-accent text-white shadow-lg shadow-accent/30'
+                    ? 'bg-accent text-white'
                     : 'text-text-secondary hover:bg-bg hover:text-text-primary'
                 }`}
               >

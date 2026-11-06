@@ -52,9 +52,8 @@ export async function PATCH(request: Request): Promise<NextResponse> {
     ...(patch.bio !== undefined ? { bio: patch.bio } : {}),
     ...(patch.color !== undefined ? { color: patch.color } : {}),
     ...(patch.calendarIds !== undefined ? { calendarIds: patch.calendarIds } : {}),
-    ...(patch.googleConnectionId !== undefined
-      ? { googleConnectionId: patch.googleConnectionId }
-      : {}),
+    // googleConnectionId is not patchable here on purpose: it only
+    // changes through /api/v0/calendar/connect, which proves ownership.
   });
   await host.save();
   return NextResponse.json({ host: hostPrivateJson(host) });

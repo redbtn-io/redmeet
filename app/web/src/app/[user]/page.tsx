@@ -10,10 +10,11 @@ import { getHostBySlug, listMeetingTypes } from '@/lib/hosts';
 export const dynamic = 'force-dynamic';
 
 /**
- * The public booking page, ported from the original's pages/booking:
- * a light card dressed in the host's colour, "Meet with <name>", and a
- * grid of meeting types that lead into the booking flow. Public: the
- * proxy exempts this shape and guests have no account.
+ * The public booking page, the original's pages/booking in the modern
+ * house styling: dark flat surfaces, hairline borders, the host's
+ * colour as the only accent. "Meet with <name>" and a grid of meeting
+ * types that lead into the booking flow. Public: the proxy exempts
+ * this shape and guests have no account.
  */
 
 export async function generateMetadata({
@@ -43,71 +44,80 @@ export default async function BookingPage({
   } as CSSProperties;
 
   return (
-    <div className="min-h-screen bg-gray-100 text-gray-900" style={style}>
-      <div className="mx-auto flex min-h-screen w-full max-w-4xl flex-col bg-white md:my-0 md:shadow-xl lg:my-0">
-        <div
-          className="p-4 text-white shadow-xl"
-          style={{ backgroundColor: 'var(--primary-color)' }}
-        >
-          <div className="flex items-center justify-between">
-            <h3 className="font-medium">Meet with {host.displayName}</h3>
-            <p className="text-xs uppercase opacity-70">Eastern Time</p>
-          </div>
+    <div className="min-h-screen bg-bg text-text-primary" style={style}>
+      <header className="border-b border-border">
+        <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-6 py-4">
+          <span className="flex items-center gap-2">
+            <img src="/icons/redbtn-logo.png" alt="" className="h-7 w-7 rounded-md" />
+            <span className="text-sm font-medium">redMeet</span>
+          </span>
+          <p className="text-xs uppercase tracking-wider text-text-secondary">{host.timeZone}</p>
         </div>
+      </header>
 
-        <div className="flex flex-col items-center justify-center space-x-4 p-4 pt-10">
+      <main className="mx-auto w-full max-w-3xl px-6 py-10">
+        <div className="flex flex-col items-center text-center">
           <div
             className="flex h-16 w-16 items-center justify-center rounded-full text-2xl font-semibold text-white"
             style={{ backgroundColor: 'var(--primary-color)' }}
           >
             {host.displayName.charAt(0).toUpperCase()}
           </div>
-          <br />
-          <div>
-            <p className="text-center text-sm text-gray-600">
-              {host.bio || 'Pick a meeting type and a time that works for you.'}
-            </p>
-          </div>
+          <h1 className="mt-4 text-2xl font-semibold">Meet with {host.displayName}</h1>
+          <p className="mt-2 max-w-md text-sm text-text-secondary">
+            {host.bio || 'Pick a meeting type and a time that works for you.'}
+          </p>
         </div>
 
-        <div className="p-4 md:p-6">
+        <div className="mt-10">
           {types.length === 0 ? (
-            <p className="text-center text-sm text-gray-500">
+            <p className="text-center text-sm text-text-secondary">
               No meeting types are open right now. Check back soon.
             </p>
           ) : (
-            <div className="mx-auto grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {types.map((meeting) => (
                 <Link
                   key={String(meeting._id)}
                   href={`/${host.slug}/${meeting.slug}`}
-                  className="block h-36 cursor-pointer overflow-hidden border-t border-gray-300 p-4 shadow-sm hover:bg-gray-100"
+                  className="group rounded-2xl border border-border bg-bg-secondary p-5 transition hover:border-[var(--primary-color)]"
                 >
-                  <h2 className="text-md font-semibold">{meeting.name}</h2>
-                  <p className="mt-2 text-sm text-gray-600">{meeting.description}</p>
-                  <p className="mt-2 text-xs uppercase text-gray-400">
+                  <div className="flex items-start justify-between gap-3">
+                    <h2 className="font-medium">{meeting.name}</h2>
+                    <span
+                      aria-hidden
+                      className="text-text-secondary transition group-hover:text-text-primary"
+                    >
+                      →
+                    </span>
+                  </div>
+                  {meeting.description && (
+                    <p className="mt-1.5 line-clamp-2 text-sm text-text-secondary">
+                      {meeting.description}
+                    </p>
+                  )}
+                  <p className="mt-3 text-xs uppercase tracking-wider text-text-secondary">
                     {meeting.lengthMinutes} minutes
                   </p>
                 </Link>
               ))}
             </div>
           )}
-          <div className="mt-8 flex items-center justify-center text-sm text-gray-500">
-            <p>
-              Powered by{' '}
-              <a
-                href="https://redbtn.io"
-                target="_blank"
-                rel="noreferrer"
-                className="hover:text-gray-700"
-                style={{ color: 'var(--primary-color)' }}
-              >
-                redbtn
-              </a>
-            </p>
-          </div>
         </div>
-      </div>
+
+        <p className="mt-12 text-center text-sm text-text-secondary">
+          Powered by{' '}
+          <a
+            href="https://redbtn.io"
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium underline-offset-4 hover:underline"
+            style={{ color: 'var(--primary-color)' }}
+          >
+            redbtn
+          </a>
+        </p>
+      </main>
     </div>
   );
 }

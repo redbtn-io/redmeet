@@ -1,32 +1,56 @@
 import 'server-only';
 
+import { createHash } from 'node:crypto';
+
 import { getConfig } from '@/lib/config';
 import { logger } from '@/lib/log';
 
 /**
  * MCP gateway client (Streamable HTTP, JSON-RPC), the same protocol the
  * fleet's `bin/mcp.py` speaks: initialize, capture the session id, then
- * tools/call. Auth is the app PAT from config; it is never logged.
+ * tools/call.
  *
- * One session per namespace per container, opened lazily. A failed call
- * drops the session so the next call reopens cleanly.
+ * Auth is PER CALL and PER HOST. The gateway promotes each HTTP
+ * request's headers into the call's credentials (see the gateway's
+ * buildEffectiveMeta), so the bearer on the request is whose redbtn
+ * connections the call acts through, and the `x-redbtn-connection-id`
+ * header selects which of THAT caller's google connections the call
+ * resolves against. The redbtn token exchange enforces ownership: a
+ * connection id that is not the caller's own comes back as an error.
+ * Sessions are therefore keyed by a fingerprint of the credential, one
+ * session per (namespace, credential), never shared across hosts. A
+ * credential value is never logged; the fingerprint is a hash prefix.
  */
 
 const PROTOCOL_VERSION = '2025-06-18';
+
+/** Whose credential a gateway call acts under, and which of their
+ *  google connections it targets. `connectionId` must only ever be one
+ *  that `google_accounts_list` returned under the SAME token. */
+export interface GatewayAuth {
+  token: string;
+  connectionId?: string | null;
+}
 
 interface GatewaySession {
   sessionId: string | null;
   nextId: number;
   ready: Promise<void> | null;
+  auth: GatewayAuth;
 }
 
 const sessions = new Map<string, GatewaySession>();
 
-function sessionFor(namespace: string): GatewaySession {
-  let s = sessions.get(namespace);
+function fingerprint(token: string): string {
+  return createHash('sha256').update(token).digest('hex').slice(0, 16);
+}
+
+function sessionFor(namespace: string, auth: GatewayAuth): GatewaySession {
+  const key = `${namespace}:${fingerprint(auth.token)}`;
+  let s = sessions.get(key);
   if (!s) {
-    s = { sessionId: null, nextId: 0, ready: null };
-    sessions.set(namespace, s);
+    s = { sessionId: null, nextId: 0, ready: null, auth };
+    sessions.set(key, s);
   }
   return s;
 }
@@ -43,7 +67,6 @@ async function post(
   payload: Record<string, unknown>,
 ): Promise<{ messages: RpcMessage[]; sessionId: string | null }> {
   const config = getConfig();
-  if (!config.mcpPat) throw new Error('REDMEET_MCP_PAT is not configured');
   const res = await fetch(`${config.mcpGatewayUrl}/${namespace}`, {
     method: 'POST',
     headers: {
@@ -54,7 +77,14 @@ async function post(
       // own mcp.py sets the same header for the same reason).
       'User-Agent':
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      Authorization: `Bearer ${config.mcpPat}`,
+      Authorization: `Bearer ${session.auth.token}`,
+      // Per-call account selection: stateless, and the gateway resolves
+      // it against the bearer's own connections only. This replaces the
+      // old google_account_use call, which mutated the user's account
+      // level default connection as a side effect.
+      ...(session.auth.connectionId
+        ? { 'x-redbtn-connection-id': session.auth.connectionId }
+        : {}),
       ...(session.sessionId ? { 'Mcp-Session-Id': session.sessionId } : {}),
     },
     body: JSON.stringify(payload),
@@ -124,13 +154,17 @@ async function ensureOpen(namespace: string, session: GatewaySession): Promise<v
  * Call one gateway tool and return its parsed payload. Gateway tools
  * answer with content[0].text holding a JSON string; that string is
  * parsed here, and a tool-level error raises.
+ *
+ * `auth` is REQUIRED: there is no ambient app credential any more.
+ * Every call names the host whose credential it acts under.
  */
 export async function callGatewayTool<T = unknown>(
   namespace: string,
   tool: string,
   args: Record<string, unknown>,
+  auth: GatewayAuth,
 ): Promise<T> {
-  const session = sessionFor(namespace);
+  const session = sessionFor(namespace, auth);
   try {
     await ensureOpen(namespace, session);
     const result = (await rpc(namespace, session, 'tools/call', {
@@ -150,7 +184,7 @@ export async function callGatewayTool<T = unknown>(
   } catch (error) {
     // Drop the session: a stale session id is the common failure, and
     // the next call should reopen rather than repeat it.
-    sessions.delete(namespace);
+    sessions.delete(`${namespace}:${fingerprint(auth.token)}`);
     logger.error('gateway tool call failed', { namespace, tool, error: String(error) });
     throw error;
   }

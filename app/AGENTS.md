@@ -31,16 +31,36 @@ booking flow, new foundations.
 
 ## redMeet specifics
 
-- **Calendar rides redbtn connections, server-side only.** The app calls
-  the MCP gateway (`mcp.redbtn.io`) `google/calendar` namespace with its
-  platform PAT (`REDMEET_MCP_PAT` in app env): `gcal_freebusy_query` for
-  availability, `gcal_events_insert` for the confirmed booking. The old
-  2025 `api.redbtn.io` contract is dead and must not be revived.
-- **V1 tenancy:** the PAT is George's, so calendar ops act on George's
-  linked Google accounts (host #1). `MeetHost.googleConnectionId` is the
-  seam for per-host connections when per-user PATs exist; until then a
-  host profile without George's connection still books, but availability
-  falls back to the app's own booking records plus the default account.
+- **Calendar rides redbtn connections, server-side only, PER HOST.** The
+  app calls the MCP gateway (`mcp.redbtn.io`) `google/calendar`
+  namespace under the HOST'S OWN redbtn credential: `MeetHost.
+  gatewayCredential` is the host's personal access token, sealed at
+  rest (AES-256-GCM, `lib/secrets.ts`, the redauth SSO sealing format),
+  and each call carries the `x-redbtn-connection-id` header naming the
+  `googleConnectionId` the host chose. The gateway resolves that id
+  against the credential owner's own connections only. Never call the
+  gateway with an ambient/app credential for calendar work, and never
+  use `google_account_use` (it mutates the user's account-level
+  default). `gcal_freebusy_query` for availability,
+  `gcal_events_insert` for the confirmed booking. The old 2025
+  `api.redbtn.io` contract is dead and must not be revived.
+- **Connecting is self serve and ownership-proven.** Settings walks the
+  host through linking Google in redbtn Connections and minting a token
+  in redbtn Settings, then `/api/v0/calendar/validate` proves the token
+  belongs to the signed-in host (hub whoami) and lists accounts under
+  it; `/api/v0/calendar/connect` re-checks both proofs before sealing
+  anything. A connection id may ONLY ever be stored when it came from
+  that list under that same token, so `googleConnectionId` is not
+  patchable through the profile route.
+- **The legacy platform PAT is a migration source, nothing more.**
+  `REDMEET_MCP_PAT` in app env is the v1 build's app-level PAT. When a
+  host with no credential resolves calendar auth, `lib/calendar-auth.ts`
+  checks whether that PAT belongs to the host (whoami match) and, if
+  so, seals it into their record; from then on there is exactly one
+  code path. A host with no credential gets own-bookings-only
+  availability, labelled "calendar not connected" in Settings and on
+  the dashboard, and bookings record as `pending_calendar`. Their
+  slots NEVER resolve against another host's calendar.
 - **Availability is the original's rules, ported:** 30 minute slots,
   weekdays 10:00 to 20:00, weekends 10:00 to 14:00, America/New_York,
   one slot of buffer before each busy block, same-day slots need two
@@ -51,6 +71,7 @@ booking flow, new foundations.
   `MeetHost`, `MeetType`, `MeetBooking`. A booking is only `confirmed`
   after the calendar event write succeeds; a failed write surfaces to the
   guest as an error, never as a fake confirmation.
-- **Deploys must be honest.** No `REDMEET_MCP_PAT` means bookings still
-  record locally but the response says the calendar write is pending;
-  never fake a calendar event id.
+- **Deploys must be honest.** A host with no connected calendar still
+  takes bookings locally, flagged `pending_calendar`, and availability
+  reports `calendarConnected: false`; never fake a calendar event id,
+  and never let a missing host credential fall back to anyone else's.

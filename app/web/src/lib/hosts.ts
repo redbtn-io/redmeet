@@ -74,6 +74,11 @@ export function hostPrivateJson(host: MeetHostDoc) {
     timeZone: host.timeZone,
     calendarIds: host.calendarIds,
     googleConnectionId: host.googleConnectionId ?? null,
+    googleConnectionEmail: host.googleConnectionEmail ?? null,
+    // The credential itself is NEVER serialised; only whether the host
+    // has a connected calendar, so the UI can label it honestly.
+    calendarConnected: typeof host.gatewayCredential === 'string' && host.gatewayCredential.length > 0,
+    calendarConnectedAt: host.calendarConnectedAt ? host.calendarConnectedAt.toISOString() : null,
     bookingUrl: `https://meet.redbtn.io/${host.slug}`,
   };
 }

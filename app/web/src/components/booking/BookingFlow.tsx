@@ -72,6 +72,7 @@ export default function BookingFlow({
   const [time, setTime] = useState<string | null>(null);
   const [loadingTimes, setLoadingTimes] = useState(false);
   const [degraded, setDegraded] = useState(false);
+  const [calendarConnected, setCalendarConnected] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
 
@@ -88,6 +89,7 @@ export default function BookingFlow({
         if (!live) return;
         setTimes(data.times ?? []);
         setDegraded(!!data.degraded);
+        setCalendarConnected(data.calendarConnected !== false);
       })
       .catch(() => {
         if (live) {
@@ -123,12 +125,12 @@ export default function BookingFlow({
     : '';
 
   return (
-    <div className="mx-auto flex w-full max-w-5xl flex-col space-y-4 rounded-lg bg-white md:mt-16 md:shadow-xl">
-      <div className="flex justify-center shadow-xl">
+    <div className="mx-auto mt-6 flex w-full max-w-5xl flex-col space-y-4 rounded-2xl border border-border bg-bg-secondary md:mt-10">
+      <div className="border-b border-border">
         <a
           href={`/${slug}`}
-          className="w-full cursor-pointer p-4 text-white hover:opacity-90 md:rounded-t-lg"
-          style={{ backgroundColor: 'var(--primary-color)' }}
+          className="block w-full cursor-pointer px-5 py-4 text-sm font-medium hover:opacity-80"
+          style={{ color: 'var(--primary-color)' }}
         >
           ← Back to Meetings
         </a>
@@ -136,18 +138,15 @@ export default function BookingFlow({
 
       <div className="space-y-4 px-2 pb-6 md:flex md:space-x-4 md:space-y-0 md:px-6">
         <div className="mx-auto mt-2 md:w-1/2">
-          <div
-            className="rounded border p-4 shadow-sm"
-            style={{ borderColor: 'var(--primary-color)' }}
-          >
+          <div className="rounded-xl border border-border bg-bg p-4">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-medium text-gray-900">{meeting.name}</h3>
-              <p className="text-xs uppercase text-gray-500">Eastern Time</p>
+              <h3 className="text-lg font-medium text-text-primary">{meeting.name}</h3>
+              <p className="text-xs uppercase text-text-secondary">Eastern Time</p>
             </div>
-            <p className="mt-2 text-sm text-gray-600">
+            <p className="mt-2 text-sm text-text-secondary">
               {meeting.description || `Meet with ${hostName}.`}
             </p>
-            <p className="mt-1 text-sm text-gray-600">{meeting.length} minutes</p>
+            <p className="mt-1 text-sm text-text-secondary">{meeting.length} minutes</p>
           </div>
           <br />
           <DatePicker
@@ -173,6 +172,7 @@ export default function BookingFlow({
               setTime={setTime}
               loadingTimes={loadingTimes}
               degraded={degraded}
+              calendarConnected={calendarConnected}
               setSubmitting={setSubmitting}
               setResult={setResult}
             />
@@ -181,10 +181,10 @@ export default function BookingFlow({
       </div>
 
       {submitting && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-100">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
           <div className="text-center">
-            <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-gray-300 border-t-gray-600" />
-            <div className="mt-4 text-lg text-gray-700">Scheduling...</div>
+            <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-white/10 border-t-white/60" />
+            <div className="mt-4 text-lg text-text-primary">Scheduling...</div>
           </div>
         </div>
       )}
@@ -212,14 +212,14 @@ function DatePicker({
 }) {
   return (
     <div className="space-y-5 p-2 md:p-0">
-      <h2 className="select-none text-xl font-bold text-gray-900">Select a Date &amp; Time</h2>
+      <h2 className="select-none text-xl font-bold text-text-primary">Select a Date &amp; Time</h2>
       <div className="flex items-center justify-between">
         <button onClick={() => onMonth(-1)} className="month-button" aria-label="Previous month">
           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor" className="h-3 w-3">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
           </svg>
         </button>
-        <h3 className="select-none text-2xl font-medium text-gray-900">
+        <h3 className="select-none text-2xl font-medium text-text-primary">
           {new Date(year, month).toLocaleString('default', { month: 'long' })}{' '}
           {year !== new Date().getFullYear() ? year : ''}
         </h3>
@@ -229,7 +229,7 @@ function DatePicker({
           </svg>
         </button>
       </div>
-      <div className="grid grid-cols-7 gap-2 text-center font-bold text-gray-900">
+      <div className="grid grid-cols-7 gap-2 text-center text-sm font-bold text-text-secondary">
         <div>S</div>
         <div>M</div>
         <div>T</div>
@@ -270,6 +270,7 @@ function TimePicker({
   setTime,
   loadingTimes,
   degraded,
+  calendarConnected,
   setSubmitting,
   setResult,
 }: {
@@ -282,6 +283,7 @@ function TimePicker({
   setTime: (t: string | null) => void;
   loadingTimes: boolean;
   degraded: boolean;
+  calendarConnected: boolean;
   setSubmitting: (b: boolean) => void;
   setResult: (m: string) => void;
 }) {
@@ -289,26 +291,33 @@ function TimePicker({
     <div className="w-full space-y-4 overflow-y-auto p-1" id="time-picker">
       {loadingTimes ? (
         <>
-          <p className="text-center text-gray-500">Loading available times...</p>
-          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-gray-300 border-t-gray-600" />
+          <p className="text-center text-text-secondary">Loading available times...</p>
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-white/10 border-t-white/60" />
         </>
       ) : (
         <>
-          <h3 className="text-lg font-medium text-gray-900">{prettyDate}</h3>
-          {degraded && (
-            <p className="text-xs text-amber-600">
+          <h3 className="text-lg font-medium text-text-primary">{prettyDate}</h3>
+          {degraded && !calendarConnected && (
+            <p className="text-xs text-amber-500">
+              The host has not connected a calendar yet, so these times come from redMeet bookings only.
+            </p>
+          )}
+          {degraded && calendarConnected && (
+            <p className="text-xs text-amber-500">
               Calendar check is unavailable right now, so these times come from redMeet bookings only.
             </p>
           )}
           {times.length === 0 ? (
-            <p className="text-sm text-gray-500">No times available this day. Try another date.</p>
+            <p className="text-sm text-text-secondary">No times available this day. Try another date.</p>
           ) : (
             <div className="grid grid-cols-2 gap-2">
               {times.map((t) => (
                 <button
                   key={t}
-                  className={`w-full cursor-pointer select-none rounded p-2 ${
-                    time === t ? 'text-white' : 'bg-gray-200 text-gray-900'
+                  className={`w-full cursor-pointer select-none rounded-lg p-2 transition ${
+                    time === t
+                      ? 'text-white'
+                      : 'border border-border bg-bg text-text-primary hover:border-[var(--primary-color)]'
                   }`}
                   style={time === t ? { backgroundColor: 'var(--primary-color)' } : undefined}
                   onClick={() => setTime(time === t ? null : t)}
@@ -449,7 +458,7 @@ function GuestForm({
           onChange={(e) => changeNumber(e.target.value)}
         />
         <button
-          className="cursor-pointer rounded p-2 text-gray-900"
+          className="cursor-pointer rounded-lg border border-border p-2 text-text-primary"
           style={{ flex: 1 }}
           onClick={(e) => {
             e.preventDefault();
@@ -468,9 +477,9 @@ function GuestForm({
           rows={1}
         />
       )}
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && <p className="text-sm text-red-400">{error}</p>}
       <button
-        className={`w-full cursor-pointer rounded p-3 text-white ${ready ? '' : 'opacity-50'}`}
+        className={`w-full cursor-pointer rounded-lg p-3 font-medium text-white transition hover:brightness-110 ${ready ? '' : 'opacity-50'}`}
         style={{ backgroundColor: 'var(--primary-color)' }}
         disabled={!ready}
         type="submit"
@@ -479,19 +488,19 @@ function GuestForm({
           ? `Schedule for ${time} on ${new Date(`${date}T00:00:00`).toLocaleDateString('en-US', { month: 'long', day: 'numeric' })}`
           : 'Select a Time'}
       </button>
-      <p className="text-sm text-gray-500">Time zone: Eastern Time, US &amp; Canada</p>
+      <p className="text-sm text-text-secondary">Time zone: Eastern Time, US &amp; Canada</p>
     </form>
   );
 }
 
 function ResultMessage({ message, onClose }: { message: string; onClose: () => void }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-gray-100">
-      <div className="relative text-center">
-        <div className="mt-4 text-lg text-gray-700">{message}</div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-2xl border border-border bg-bg-secondary p-8 text-center">
+        <div className="text-lg text-text-primary">{message}</div>
         <button
           onClick={onClose}
-          className="mt-4 cursor-pointer rounded px-4 py-2 text-white hover:opacity-90"
+          className="mt-6 cursor-pointer rounded-xl px-5 py-2.5 font-medium text-white transition hover:brightness-110"
           style={{ backgroundColor: 'var(--primary-color)' }}
         >
           Close

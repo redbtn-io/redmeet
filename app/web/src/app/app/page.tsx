@@ -11,6 +11,8 @@ interface Host {
   color: string;
   timeZone: string;
   bookingUrl: string;
+  calendarConnected: boolean;
+  googleConnectionEmail: string | null;
 }
 
 interface MeetingType {
@@ -111,6 +113,20 @@ export default function Dashboard() {
         sub="Share your link, and bookings land here and on your calendar."
       />
 
+      {!host.calendarConnected && (
+        <Card className="mb-6 border-accent/40">
+          <p className="text-sm font-medium">Calendar not connected</p>
+          <p className="mt-1 text-sm text-text-secondary">
+            Guests booking through your link see times from your redMeet bookings only, not
+            your real calendar, and new bookings arrive without a calendar invite.{' '}
+            <Link href="/app/settings" className="text-text-primary underline underline-offset-4">
+              Connect your calendar in Settings
+            </Link>{' '}
+            to fix that.
+          </p>
+        </Card>
+      )}
+
       <Card className="mb-6">
         <p className="text-xs uppercase tracking-[0.2em] text-text-secondary">Your booking link</p>
         <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -198,6 +214,11 @@ export default function Dashboard() {
                           {b.status === 'calendar_failed' && (
                             <span className="ml-2 rounded bg-black/30 px-1.5 py-0.5 text-xs">
                               calendar invite pending
+                            </span>
+                          )}
+                          {b.status === 'pending_calendar' && (
+                            <span className="ml-2 rounded bg-black/30 px-1.5 py-0.5 text-xs">
+                              not on a calendar yet
                             </span>
                           )}
                         </div>

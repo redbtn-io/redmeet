@@ -46,7 +46,7 @@ export default async function SchedulerPage({
   } as CSSProperties;
 
   return (
-    <div className="min-h-screen bg-gray-100 pb-10 text-gray-900" style={style}>
+    <div className="min-h-screen bg-bg pb-10 text-text-primary" style={style}>
       <BookingFlow
         slug={host.slug}
         hostName={host.displayName}

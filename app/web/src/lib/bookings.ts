@@ -10,6 +10,7 @@ import {
 } from '@redmeet/core';
 
 import { createCalendarEvent, getBusyIntervals } from '@/lib/calendar';
+import { CalendarNotConnectedError, resolveHostCalendarAuth } from '@/lib/calendar-auth';
 import { getDb } from '@/lib/db';
 import { logger } from '@/lib/log';
 import { MeetBooking, type MeetBookingDoc } from '@/models/meet-booking';
@@ -18,22 +19,26 @@ import type { MeetTypeDoc } from '@/models/meet-type';
 
 /**
  * Booking orchestration. Availability is the original's slot math over
- * two busy sources: the host's real calendar (gateway free/busy) and
- * this app's own bookings. If the gateway cannot answer, the app's own
- * bookings still block their slots and the answer is flagged degraded;
- * availability never silently becomes "everything is free".
+ * two busy sources: the host's real calendar (gateway free/busy, read
+ * under the host's OWN credential and selected connection) and this
+ * app's own bookings. If the host has no connected calendar, or the
+ * gateway cannot answer, the app's own bookings still block their
+ * slots and the answer is flagged degraded with `calendarConnected`
+ * saying which case it is; availability never silently becomes
+ * "everything is free", and it never reads anyone else's calendar.
  */
 
 export interface AvailabilityResult {
   slots: Slot[];
   degraded: boolean;
+  calendarConnected: boolean;
 }
 
 export async function busyForWindow(
   host: MeetHostDoc,
   timeMinMs: number,
   timeMaxMs: number,
-): Promise<{ busy: BusyInterval[]; degraded: boolean }> {
+): Promise<{ busy: BusyInterval[]; degraded: boolean; calendarConnected: boolean }> {
   await getDb();
   const own = await MeetBooking.find({
     hostId: host._id,
@@ -45,15 +50,19 @@ export async function busyForWindow(
     startMs: b.start.getTime(),
     endMs: b.end.getTime(),
   }));
+  const auth = await resolveHostCalendarAuth(host);
+  if (!auth) {
+    return { busy, degraded: true, calendarConnected: false };
+  }
   let degraded = false;
   try {
-    const calendarBusy = await getBusyIntervals(host, timeMinMs, timeMaxMs);
+    const calendarBusy = await getBusyIntervals(auth, host.timeZone, host.calendarIds, timeMinMs, timeMaxMs);
     busy.push(...calendarBusy);
   } catch (error) {
     degraded = true;
     logger.warn('freebusy unavailable, using own bookings only', { error: String(error) });
   }
-  return { busy, degraded };
+  return { busy, degraded, calendarConnected: true };
 }
 
 export async function availabilityFor(
@@ -63,7 +72,7 @@ export async function availabilityFor(
 ): Promise<AvailabilityResult> {
   const dayStart = zonedTimeToUtcMs(date, 0, host.timeZone);
   const dayEnd = dayStart + 24 * 60 * 60 * 1000;
-  const { busy, degraded } = await busyForWindow(host, dayStart, dayEnd);
+  const { busy, degraded, calendarConnected } = await busyForWindow(host, dayStart, dayEnd);
   const slots = availableSlots({
     date,
     durationMinutes: type.lengthMinutes,
@@ -71,7 +80,7 @@ export async function availabilityFor(
     nowMs: Date.now(),
     timeZone: host.timeZone,
   });
-  return { slots, degraded };
+  return { slots, degraded, calendarConnected };
 }
 
 export class BookingConflictError extends Error {}
@@ -109,34 +118,55 @@ export async function createBooking(
     status: 'pending_calendar',
   });
 
+  const auth = await resolveHostCalendarAuth(host);
+  if (!auth) {
+    // No calendar to write to: the booking stands as a redMeet booking
+    // (it blocks the slot), honestly flagged as not on a calendar. It
+    // must NOT be written to anyone else's calendar.
+    booking.status = 'pending_calendar';
+    booking.calendarError = 'Host calendar not connected';
+    await booking.save();
+    return booking;
+  }
+
   try {
-    const { eventId, calendarId } = await createCalendarEvent(host, {
-      summary: `${type.name} with ${input.name}`,
-      description: [
-        `${input.name}${input.phone ? `, ${input.phone}` : ''}`,
-        input.comments ? `Comments: ${input.comments}` : '',
-        `Booked via redMeet (https://meet.redbtn.io/${host.slug}/${type.slug})`,
-      ]
-        .filter(Boolean)
-        .join('\n'),
-      location: 'Virtual',
-      startMs: slot.startMs,
-      endMs: slot.endMs,
-      guestName: input.name,
-      guestEmail: input.email,
-      guestPhone: input.phone ?? '',
-      comments: input.comments ?? '',
-    });
+    const { eventId, calendarId } = await createCalendarEvent(
+      auth,
+      host.timeZone,
+      host.calendarIds[0] ?? 'primary',
+      {
+        summary: `${type.name} with ${input.name}`,
+        description: [
+          `${input.name}${input.phone ? `, ${input.phone}` : ''}`,
+          input.comments ? `Comments: ${input.comments}` : '',
+          `Booked via redMeet (https://meet.redbtn.io/${host.slug}/${type.slug})`,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        location: 'Virtual',
+        startMs: slot.startMs,
+        endMs: slot.endMs,
+        guestName: input.name,
+        guestEmail: input.email,
+        guestPhone: input.phone ?? '',
+        comments: input.comments ?? '',
+      },
+    );
     booking.status = 'confirmed';
     booking.calendarEventId = eventId;
     booking.calendarId = calendarId;
   } catch (error) {
-    booking.status = 'calendar_failed';
-    booking.calendarError = String(error).slice(0, 500);
-    logger.error('calendar write failed for booking', {
-      bookingId: String(booking._id),
-      error: booking.calendarError,
-    });
+    if (error instanceof CalendarNotConnectedError) {
+      booking.status = 'pending_calendar';
+      booking.calendarError = 'Host calendar not connected';
+    } else {
+      booking.status = 'calendar_failed';
+      booking.calendarError = String(error).slice(0, 500);
+      logger.error('calendar write failed for booking', {
+        bookingId: String(booking._id),
+        error: booking.calendarError,
+      });
+    }
   }
   await booking.save();
   return booking;

@@ -70,7 +70,7 @@ export default async function Landing() {
         <div className="mt-8">
           <a
             href={signIn}
-            className="inline-block rounded-xl bg-accent px-6 py-3 font-medium text-white"
+            className="inline-block rounded-xl bg-accent px-6 py-3 font-medium text-white transition hover:brightness-110 active:scale-[0.98]"
           >
             Get your booking link
           </a>
