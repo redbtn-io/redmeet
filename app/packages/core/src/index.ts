@@ -6,6 +6,8 @@
  */
 import { z } from 'zod';
 
+import { SLOT_STEP_MINUTES, parseTimeOfDay } from './availability';
+
 export * from './availability';
 
 /* ---------------- slugs ---------------- */
@@ -100,11 +102,36 @@ export const calendarSelectionSchema = z.object({
 });
 export type CalendarSelection = z.infer<typeof calendarSelectionSchema>;
 
+const timeOfDaySchema = z
+  .string()
+  .regex(/^\d{1,2}:\d{2}$/, 'Use a time like 10:00')
+  .refine((v) => parseTimeOfDay(v) !== null, 'Use a valid time of day')
+  .refine((v) => (parseTimeOfDay(v) ?? 0) % SLOT_STEP_MINUTES === 0, 'Times must fall on the hour or half hour');
+
+const dayWindowSchema = z
+  .object({ start: timeOfDaySchema, end: timeOfDaySchema })
+  .refine((d) => (parseTimeOfDay(d.start) ?? 0) < (parseTimeOfDay(d.end) ?? 0), {
+    message: 'Start time must be before the end time',
+  });
+
+/**
+ * A host's booking hours: weekday and weekend windows as "HH:mm"
+ * wall times in the host's zone. The defaults live in availability.ts
+ * (DEFAULT_AVAILABILITY_WINDOWS); this schema only shapes and checks
+ * what a host saves.
+ */
+export const availabilityWindowsSchema = z.object({
+  weekday: dayWindowSchema,
+  weekend: dayWindowSchema,
+});
+export type AvailabilityWindowsInput = z.infer<typeof availabilityWindowsSchema>;
+
 export const profilePatchSchema = z.object({
   slug: z.string().min(2).max(40).optional(),
   displayName: z.string().min(1).max(80).optional(),
   bio: z.string().max(500).optional(),
   color: hexColorSchema.optional(),
+  availabilityWindows: availabilityWindowsSchema.optional(),
   calendarSelection: calendarSelectionSchema.optional(),
   // NOTE: connection ids are deliberately NOT patchable on their own
   // here. A connection id may only ever be stored when it came from a

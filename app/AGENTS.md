@@ -79,10 +79,16 @@ booking flow, new foundations.
   availability, labelled "calendar not connected" in Settings and on
   the dashboard, and bookings record as `pending_calendar`. Their
   slots NEVER resolve against another host's calendar.
-- **Availability is the original's rules, ported:** 30 minute slots,
-  weekdays 10:00 to 20:00, weekends 10:00 to 14:00, America/New_York,
-  one slot of buffer before each busy block, same-day slots need two
-  hours of lead, two month horizon. The pure math lives in
+- **Availability is the original's rules, ported, with the host's own
+  hours:** 30 minute slots, one slot of buffer before each busy block,
+  same-day slots need two hours of lead, two month horizon,
+  America/New_York. The booking windows are per host:
+  `MeetHost.availabilityWindows` (weekday and weekend start/end,
+  "HH:mm"), set in Settings and validated by `@redmeet/core` (start
+  before end, 30 minute alignment). The defaults are the original's
+  hardcoded hours (weekdays 10:00 to 20:00, weekends 10:00 to 14:00),
+  and `availableSlots` takes the host's windows as an input, so a host
+  who never sets them sees no change. The pure math lives in
   `@redmeet/core` (`availability.ts`); the busy blocks come from the
   gateway, never from the client.
 - **The app owns its store.** Mongo via the house mongoose singleton:

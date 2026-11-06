@@ -1,6 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+
+import { formatTimeOfDay, validateAvailabilityWindows, type AvailabilityWindows } from '@redmeet/core';
+
 import { Card, PageHeader } from '../ui';
 
 interface SelectionEntry {
@@ -16,6 +19,7 @@ interface Host {
   bio: string;
   color: string;
   timeZone: string;
+  availabilityWindows: AvailabilityWindows;
   calendarIds: string[];
   calendarSelection: SelectionEntry[];
   calendarWriteTarget: { connectionId: string; calendarId: string } | null;
@@ -236,6 +240,8 @@ export default function Settings() {
         </Card>
 
         <CalendarCard host={host} setHost={setHost} onSaved={setSaved} />
+
+        <HoursCard host={host} setHost={setHost} onSaved={setSaved} />
       </div>
 
       <Card className="mt-6">
@@ -591,8 +597,12 @@ function CalendarCard({
             </select>
           </div>
           <p className="text-xs text-text-secondary">
-            Time zone: {host.timeZone}. Booking windows: weekdays 10:00AM to 8:00PM,
-            weekends 10:00AM to 2:00PM, 30 minute slots.
+            Time zone: {host.timeZone}. Booking windows: weekdays{' '}
+            {formatTimeOfDay(host.availabilityWindows.weekday.start)} to{' '}
+            {formatTimeOfDay(host.availabilityWindows.weekday.end)}, weekends{' '}
+            {formatTimeOfDay(host.availabilityWindows.weekend.start)} to{' '}
+            {formatTimeOfDay(host.availabilityWindows.weekend.end)}, 30 minute slots.
+            Change them in the Hours card.
           </p>
           <div className="flex flex-wrap gap-3">
             <button type="submit" className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:brightness-110 active:scale-[0.98]">
@@ -704,6 +714,119 @@ function CalendarCard({
           )}
         </div>
       )}
+    </Card>
+  );
+}
+
+/**
+ * Booking hours: the host's own weekday and weekend windows. Guests
+ * only ever see slots inside these, in the host's time zone. The
+ * defaults are the original app's hours; saving replaces them whole.
+ */
+function HoursCard({
+  host,
+  setHost,
+  onSaved,
+}: {
+  host: Host;
+  setHost: (h: Host) => void;
+  onSaved: (note: string) => void;
+}) {
+  const [draft, setDraft] = useState<AvailabilityWindows>(host.availabilityWindows);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setDraft(host.availabilityWindows);
+  }, [host.availabilityWindows]);
+
+  function setDay(day: 'weekday' | 'weekend', edge: 'start' | 'end', value: string) {
+    setDraft((d) => ({ ...d, [day]: { ...d[day], [edge]: value } }));
+  }
+
+  async function save(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    const invalid = validateAvailabilityWindows(draft);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await fetch('/api/v0/profile', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ availabilityWindows: draft }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data.error ?? 'Could not save your hours. Try again.');
+        return;
+      }
+      setHost(data.host);
+      onSaved('Booking hours saved.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const rows = [
+    { day: 'weekday' as const, title: 'Weekdays', sub: 'Monday to Friday' },
+    { day: 'weekend' as const, title: 'Weekends', sub: 'Saturday and Sunday' },
+  ];
+
+  return (
+    <Card>
+      <h3 className="mb-4 font-semibold">Booking hours</h3>
+      {error && (
+        <p className="mb-4 rounded-lg border border-accent/40 bg-accent/10 px-3 py-2 text-sm">{error}</p>
+      )}
+      <form className="space-y-5" onSubmit={save}>
+        <p className="text-sm text-text-secondary">
+          Guests can only book inside these hours, in your time zone ({host.timeZone}).
+          Times fall on the hour or half hour, and slots are 30 minutes.
+        </p>
+        {rows.map((row) => (
+          <div key={row.day}>
+            <p className="text-sm font-medium">{row.title}</p>
+            <p className="mb-2 text-xs text-text-secondary">{row.sub}</p>
+            <div className="flex items-end gap-3">
+              <div className="flex-1">
+                <label className={labelCls} htmlFor={`${row.day}Start`}>From</label>
+                <input
+                  id={`${row.day}Start`}
+                  type="time"
+                  step={1800}
+                  className={inputCls}
+                  value={draft[row.day].start}
+                  onChange={(e) => setDay(row.day, 'start', e.target.value)}
+                  required
+                />
+              </div>
+              <div className="flex-1">
+                <label className={labelCls} htmlFor={`${row.day}End`}>To</label>
+                <input
+                  id={`${row.day}End`}
+                  type="time"
+                  step={1800}
+                  className={inputCls}
+                  value={draft[row.day].end}
+                  onChange={(e) => setDay(row.day, 'end', e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+          </div>
+        ))}
+        <button
+          type="submit"
+          disabled={busy}
+          className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:brightness-110 active:scale-[0.98] disabled:opacity-50"
+        >
+          {busy ? 'Saving...' : 'Save hours'}
+        </button>
+      </form>
     </Card>
   );
 }

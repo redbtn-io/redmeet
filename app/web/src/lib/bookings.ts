@@ -2,6 +2,7 @@ import 'server-only';
 
 import {
   availableSlots,
+  normalizeAvailabilityWindows,
   parseTimeLabel,
   zonedTimeToUtcMs,
   type BookingInput,
@@ -104,6 +105,7 @@ export async function availabilityFor(
     busy,
     nowMs: Date.now(),
     timeZone: host.timeZone,
+    windows: normalizeAvailabilityWindows(host.availabilityWindows),
   });
   return { slots, degraded, calendarConnected };
 }

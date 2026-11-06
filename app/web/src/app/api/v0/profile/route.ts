@@ -109,7 +109,7 @@ async function applyCalendarSelection(
   return null;
 }
 
-/** PATCH /api/v0/profile, update slug, name, bio, colour, calendars. */
+/** PATCH /api/v0/profile, update slug, name, bio, colour, hours, calendars. */
 export async function PATCH(request: Request): Promise<NextResponse> {
   const gated = await gate(request, { mutate: true });
   if (!gated.ok) return gated.response;
@@ -150,6 +150,9 @@ export async function PATCH(request: Request): Promise<NextResponse> {
     ...(patch.displayName !== undefined ? { displayName: patch.displayName } : {}),
     ...(patch.bio !== undefined ? { bio: patch.bio } : {}),
     ...(patch.color !== undefined ? { color: patch.color } : {}),
+    ...(patch.availabilityWindows !== undefined
+      ? { availabilityWindows: patch.availabilityWindows }
+      : {}),
     // Connection ids are not patchable here on purpose: they only
     // land on a host through /api/v0/calendar/connect, which proves
     // ownership, and selections are re-proven above on every save.

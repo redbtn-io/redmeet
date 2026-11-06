@@ -1,7 +1,7 @@
 import 'server-only';
 import type { HydratedDocument } from 'mongoose';
 
-import { isValidSlug, slugify } from '@redmeet/core';
+import { isValidSlug, normalizeAvailabilityWindows, slugify } from '@redmeet/core';
 
 import { getDb } from '@/lib/db';
 import type { SessionUser } from '@/lib/session';
@@ -75,6 +75,7 @@ export function hostPrivateJson(host: MeetHostDoc) {
     bio: host.bio,
     color: host.color,
     timeZone: host.timeZone,
+    availabilityWindows: normalizeAvailabilityWindows(host.availabilityWindows),
     calendarIds: host.calendarIds,
     calendarSelection: (host.calendarSelection ?? []).map((e) => ({
       connectionId: e.connectionId,

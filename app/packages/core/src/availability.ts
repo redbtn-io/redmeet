@@ -4,8 +4,11 @@
  *
  * The original's rules, kept:
  *   - 30 minute slots.
- *   - Weekdays (Mon to Fri): starts from 10:00AM, last end 8:00PM.
- *   - Weekends (Sat, Sun): starts from 10:00AM, last end 2:00PM.
+ *   - The booking windows are the HOST'S OWN: weekday and weekend
+ *     start/end times, stored on the host record and passed in. The
+ *     defaults are the original's hours (weekdays 10:00AM to 8:00PM,
+ *     weekends 10:00AM to 2:00PM), so a host who never sets them sees
+ *     no change.
  *   - A busy block also blocks the one slot before it (buffer; the
  *     original gave the "Life Time" calendar two, v1 keeps one for all).
  *   - Same-day slots need two hours of lead time.
@@ -34,6 +37,79 @@ export interface Slot {
 
 const WEEKDAY_WINDOW = { start: 10 * 60, end: 20 * 60 };
 const WEEKEND_WINDOW = { start: 10 * 60, end: 14 * 60 };
+
+/** One day's booking window, as "HH:mm" wall times in the host zone. */
+export interface DayWindow {
+  start: string;
+  end: string;
+}
+
+/**
+ * A host's booking hours: one window for weekdays (Mon to Fri), one
+ * for weekends (Sat, Sun). Stored on the host record; the defaults
+ * below are the original 2025 app's hardcoded hours.
+ */
+export interface AvailabilityWindows {
+  weekday: DayWindow;
+  weekend: DayWindow;
+}
+
+export const DEFAULT_AVAILABILITY_WINDOWS: AvailabilityWindows = {
+  weekday: { start: '10:00', end: '20:00' },
+  weekend: { start: '10:00', end: '14:00' },
+};
+
+/** Parse an "HH:mm" wall time to minutes since midnight, or null. */
+export function parseTimeOfDay(value: string): number | null {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const h = parseInt(match[1]!, 10);
+  const m = parseInt(match[2]!, 10);
+  if (h > 23 || m > 59) return null;
+  return h * 60 + m;
+}
+
+/** Format an "HH:mm" wall time as a display label, e.g. "6:00PM". */
+export function formatTimeOfDay(value: string): string {
+  const minutes = parseTimeOfDay(value);
+  return minutes === null ? value : formatTimeLabel(minutes);
+}
+
+/** Fill any missing or unreadable window fields from the defaults. */
+export function normalizeAvailabilityWindows(
+  windows?: Partial<AvailabilityWindows> | null,
+): AvailabilityWindows {
+  const pick = (day: Partial<DayWindow> | undefined, fallback: DayWindow): DayWindow => {
+    const start = day?.start !== undefined && parseTimeOfDay(day.start) !== null ? day.start : fallback.start;
+    const end = day?.end !== undefined && parseTimeOfDay(day.end) !== null ? day.end : fallback.end;
+    return { start, end };
+  };
+  return {
+    weekday: pick(windows?.weekday, DEFAULT_AVAILABILITY_WINDOWS.weekday),
+    weekend: pick(windows?.weekend, DEFAULT_AVAILABILITY_WINDOWS.weekend),
+  };
+}
+
+/**
+ * Validate a full windows value the way Settings and the profile
+ * route both need: every time present, start before end, and both on
+ * a 30 minute boundary. Returns a plain-words error, or null.
+ */
+export function validateAvailabilityWindows(windows: AvailabilityWindows): string | null {
+  for (const [name, day] of [
+    ['Weekday', windows.weekday],
+    ['Weekend', windows.weekend],
+  ] as const) {
+    const start = parseTimeOfDay(day.start);
+    const end = parseTimeOfDay(day.end);
+    if (start === null || end === null) return `${name} hours need a start and an end time.`;
+    if (start % SLOT_STEP_MINUTES !== 0 || end % SLOT_STEP_MINUTES !== 0) {
+      return `${name} hours must fall on the hour or half hour.`;
+    }
+    if (start >= end) return `${name} start time must be before the end time.`;
+  }
+  return null;
+}
 
 /** Format minutes-since-midnight the way the original picker did. */
 export function formatTimeLabel(minutes: number): string {
@@ -112,6 +188,8 @@ export interface AvailableSlotsInput {
   busy: BusyInterval[];
   nowMs: number;
   timeZone?: string;
+  /** The host's own booking hours; defaults to the original's. */
+  windows?: AvailabilityWindows;
 }
 
 /**
@@ -123,7 +201,13 @@ export function availableSlots(input: AvailableSlotsInput): Slot[] {
   const timeZone = input.timeZone ?? DEFAULT_TIME_ZONE;
   const day = weekdayOf(input.date);
   const weekend = day === 0 || day === 6;
-  const win = weekend ? WEEKEND_WINDOW : WEEKDAY_WINDOW;
+  const windows = normalizeAvailabilityWindows(input.windows);
+  const picked = weekend ? windows.weekend : windows.weekday;
+  const fallback = weekend ? WEEKEND_WINDOW : WEEKDAY_WINDOW;
+  const win = {
+    start: parseTimeOfDay(picked.start) ?? fallback.start,
+    end: parseTimeOfDay(picked.end) ?? fallback.end,
+  };
   const isToday = dateInZone(input.nowMs, timeZone) === input.date;
   const earliestStart = isToday ? input.nowMs + LEAD_MINUTES * 60_000 : Number.NEGATIVE_INFINITY;
 

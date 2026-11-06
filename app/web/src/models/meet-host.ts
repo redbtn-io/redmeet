@@ -44,6 +44,23 @@ export interface CalendarWriteTargetDoc {
   calendarId: string;
 }
 
+/** One day's booking window, "HH:mm" wall times in the host's zone. */
+export interface DayWindowDoc {
+  start: string;
+  end: string;
+}
+
+/**
+ * The host's own booking hours: a weekday window and a weekend
+ * window. Set in Settings; the defaults are the original 2025 app's
+ * hardcoded hours, so a host who never touches them sees no change.
+ * The shape mirrors @redmeet/core's AvailabilityWindows.
+ */
+export interface AvailabilityWindowsDoc {
+  weekday: DayWindowDoc;
+  weekend: DayWindowDoc;
+}
+
 export interface MeetHostDoc {
   _id: Types.ObjectId;
   /** redauth userId of the owner. */
@@ -56,6 +73,12 @@ export interface MeetHostDoc {
   /** Hex colour, e.g. #dc2626. */
   color: string;
   timeZone: string;
+  /**
+   * The host's booking hours (weekday and weekend windows). Absent on
+   * records written before the field existed; readers normalise
+   * through @redmeet/core's defaults.
+   */
+  availabilityWindows?: AvailabilityWindowsDoc | null;
   /**
    * LEGACY: google calendar ids on the single legacy connection that
    * availability was read from. Superseded by `calendarSelection`;
@@ -119,6 +142,22 @@ const calendarWriteTargetSchema = new Schema<CalendarWriteTargetDoc>(
   { _id: false },
 );
 
+const dayWindowSchema = new Schema<DayWindowDoc>(
+  {
+    start: { type: String, required: true },
+    end: { type: String, required: true },
+  },
+  { _id: false },
+);
+
+const availabilityWindowsSchema = new Schema<AvailabilityWindowsDoc>(
+  {
+    weekday: { type: dayWindowSchema, required: true },
+    weekend: { type: dayWindowSchema, required: true },
+  },
+  { _id: false },
+);
+
 const meetHostSchema = new Schema<MeetHostDoc>(
   {
     ownerId: { type: String, required: true, unique: true, index: true },
@@ -128,6 +167,13 @@ const meetHostSchema = new Schema<MeetHostDoc>(
     bio: { type: String, default: '' },
     color: { type: String, default: '#dc2626' },
     timeZone: { type: String, default: 'America/New_York' },
+    availabilityWindows: {
+      type: availabilityWindowsSchema,
+      default: () => ({
+        weekday: { start: '10:00', end: '20:00' },
+        weekend: { start: '10:00', end: '14:00' },
+      }),
+    },
     calendarIds: { type: [String], default: ['primary'] },
     calendarSelection: { type: [calendarSelectionEntrySchema], default: [] },
     calendarWriteTarget: { type: calendarWriteTargetSchema, default: null },
