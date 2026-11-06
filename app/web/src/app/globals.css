@@ -9,8 +9,26 @@
 @import "@redbtn/redstyle/tokens.css";
 @import "@redbtn/redstyle/base.css";
 
-/* v0: packages/redlabel is a shim; its styles.css carries no rules yet.
-   Re-add the import when the canonical redlabel styles are ported. */
+/*
+ * redLabel's own stylesheet, after redstyle's base.css. It holds the
+ * handwritten rules Tailwind cannot emit from a class name: the keyframes
+ * that replace redstyle's two red-hardcoded loading animations, the danger
+ * button, the DataTable phone mode and the InfoTip hit area.
+ */
+@import "@redbtn/redlabel/styles.css";
+
+/*
+ * Tailwind v4 auto-detects content but deliberately skips node_modules, so
+ * the utility classes baked into redstyle's compiled components and into
+ * redLabel's would never be generated and both would render unstyled.
+ *
+ * COUNT THE LEVELS. This monorepo has ONE hoisted node_modules at the repo
+ * root and no web/node_modules, so from web/src/app/globals.css redstyle's
+ * dist is THREE levels up, not two. A wrong @source path fails SILENTLY,
+ * dropping every redstyle class from the stylesheet with no error.
+ */
+@source "../../../node_modules/@redbtn/redstyle/dist";
+@source "../../../packages/redlabel/src";
 
 /* ---------- redSites app polish (visual only) ---------- */
 

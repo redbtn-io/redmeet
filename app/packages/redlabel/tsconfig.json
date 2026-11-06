@@ -1,1 +1,10 @@
-{"compilerOptions":{"jsx":"react-jsx","lib":["ES2022","DOM"]},"extends":"../../tsconfig.base.json","include":["src/**/*.ts","src/**/*.tsx"]}
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["node"],
+    "allowImportingTsExtensions": false
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx", "vitest.config.ts", "brand-icons.lock.json"]
+}

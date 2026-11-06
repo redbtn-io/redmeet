@@ -6,6 +6,7 @@ import type { CSSProperties } from 'react';
 import { lightenColor } from '@redmeet/core';
 
 import BookingFlow from '@/components/booking/BookingFlow';
+import { ThemeToggle } from '@/components/ThemeToggle';
 import { getDb } from '@/lib/db';
 import { getHostBySlug } from '@/lib/hosts';
 import { MeetType } from '@/models/meet-type';
@@ -54,7 +55,10 @@ export default async function SchedulerPage({
             <img src="/icons/redbtn-logo.png" alt="" className="h-7 w-7 rounded-md" />
             <span className="text-sm font-medium">redMeet</span>
           </Link>
-          <p className="text-xs uppercase tracking-wider text-text-secondary">{host.timeZone}</p>
+          <div className="flex items-center gap-1">
+            <p className="text-xs uppercase tracking-wider text-text-secondary">{host.timeZone}</p>
+            <ThemeToggle />
+          </div>
         </div>
       </header>
       <BookingFlow

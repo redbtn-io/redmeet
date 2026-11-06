@@ -1,1 +1,55 @@
-{"description": "Brand resolution and theming for redMeet. v0 SHIM: the canonical implementation is redscan's packages/redlabel \u2014 port the brand registry when multi-brand matters. Do not invent a second brand API.", "exports": {".": "./src/index.ts", "./brands": "./src/brands.ts", "./next": "./src/next.ts", "./package.json": "./package.json", "./styles.css": "./src/styles.css", "./theme": "./src/theme.ts", "./ui": "./src/ui.tsx", "./auth": "./src/auth.ts"}, "name": "@redbtn/redlabel", "private": true, "type": "module", "version": "0.1.0"}
+{
+  "name": "@redbtn/redlabel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Brand resolution, runtime theming and themable primitives for redbtn products",
+  "sideEffects": ["*.css"],
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server.ts",
+    "./client": "./src/client.ts",
+    "./theme": "./src/theme.tsx",
+    "./ui": "./src/ui/index.ts",
+    "./ui/client": "./src/ui/client.ts",
+    "./ui/*": "./src/ui/*.tsx",
+    "./next": "./src/next.ts",
+    "./brands": "./src/brands/index.ts",
+    "./presentation": "./src/brands/presentation.ts",
+    "./styles.css": "./src/css/redlabel.css",
+    "./package.json": "./package.json"
+  },
+  "bin": { "redlabel-icons": "./scripts/build-brand-icons.mjs" },
+  "files": ["src", "scripts", "assets", "brand-icons.lock.json"],
+  "dependencies": {
+    "server-only": "^0.0.1"
+  },
+  "peerDependencies": {
+    "@redbtn/redstyle": ">=0.6.2 <0.7.0",
+    "next": ">=16.3.0",
+    "react": ">=19.2.0",
+    "react-dom": ">=19.2.0",
+    "zod": "^4.6.5"
+  },
+  "peerDependenciesMeta": {
+    "next": { "optional": true },
+    "react": { "optional": true },
+    "react-dom": { "optional": true }
+  },
+  "devDependencies": {
+    "@redbtn/redstyle": "0.6.2",
+    "@types/node": "^26.6.2",
+    "@types/react": "^19.2.0",
+    "next": "^16.3.0",
+    "react": "^19.2.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.1",
+    "zod": "^4.6.5"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run",
+    "icons": "npm exec --yes --package=sharp@^0.34 -- node scripts/build-brand-icons.mjs"
+  },
+  "publishConfig": { "registry": "https://registry.redbtn.io" }
+}

@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState, type ReactNode } from 'react';
+import { ThemeToggle } from '@/components/ThemeToggle';
 import { IconCalendar, IconSettings, IconSignOut } from './ui';
 
 const NAV = [
@@ -82,6 +83,10 @@ export default function AppShell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="border-t border-border p-3">
+          <div className="flex items-center justify-between px-3 pb-1">
+            <span className="text-xs text-text-secondary">Theme</span>
+            <ThemeToggle />
+          </div>
           {email && (
             <p className="truncate px-3 pb-2 text-xs text-text-secondary" title={email}>
               {email}
@@ -104,7 +109,9 @@ export default function AppShell({ children }: { children: ReactNode }) {
           <img src="/icons/redbtn-logo.png" alt="" className="h-8 w-8 rounded-lg" />
           <span className="font-semibold">redMeet</span>
         </Link>
-        <form action="/signout" method="post">
+        <div className="flex items-center gap-1">
+          <ThemeToggle />
+          <form action="/signout" method="post">
           <button
             type="submit"
             aria-label="Sign out"
@@ -112,7 +119,8 @@ export default function AppShell({ children }: { children: ReactNode }) {
           >
             <IconSignOut className="h-4 w-4" /> Sign out
           </button>
-        </form>
+          </form>
+        </div>
       </header>
 
       <main id="main-content" className="relative z-10 min-h-screen min-h-dvh pb-28 md:pb-0 md:pl-60">

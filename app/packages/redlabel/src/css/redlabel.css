@@ -1,0 +1,358 @@
+/*
+ * redLabel's own stylesheet.
+ *
+ * Four of the redstyle workarounds are handwritten CSS, not Tailwind utilities:
+ * keyframes, a ::before with content: attr(data-label), a negative-inset hit
+ * area. Tailwind's @source harvests class NAMES and emits nothing for any of
+ * them, so a package that owns these rules has to ship a stylesheet or it ships
+ * nothing.
+ *
+ * Every selector is prefixed rl-, so it can never collide with a redstyle class
+ * or an app class, and every colour in it is color-mix(in srgb, var(--token) N%,
+ * transparent), a bare var(--token), or var(--extra-property, <literal>) for the
+ * two properties nothing else declares.
+ *
+ * The two fallback literals #525252 and #ffffff are this file's only hex, and
+ * they are why scripts/check-no-hex.mjs allowlists exactly those two STRINGS in
+ * this file rather than exempting the file. They are load bearing: nothing but
+ * redLabel's own emitters declares --text-tertiary or --error-foreground, so a
+ * surface rendered outside the branded root layout (app/global-error.tsx, which
+ * replaces <html> entirely) would otherwise resolve them to
+ * invalid-at-computed-value-time and paint unset text on a red fill, which is
+ * the leak-3 workaround failing on the exact error screen it was written for.
+ *
+ * NEVER use redstyle's own .skeleton or .streaming-pulse, not even a locally
+ * tokenized copy under the same name: base.css ships .light .skeleton and
+ * .light .streaming-pulse at (0,2,0), which beats a local .skeleton at (0,1,0),
+ * so the copy would be correct in dark and silently lose to the hardcoded red in
+ * light. Different names are the fix; the rl- prefix is how they stay different.
+ */
+
+/* --------------------------------------------------- leak 1: the skeleton -- */
+
+/*
+ * redstyle's .skeleton mixes rgba(239, 68, 68, 0.06) into its shimmer, so every
+ * loading surface in every product shimmers redbtn red (base.css:143).
+ *
+ * The wash follows --accent instead, which means it follows the brand, and the
+ * light scheme keeps redstyle's neutral wash because that one is already
+ * brand neutral.
+ */
+@keyframes rl-skeleton-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.rl-skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-tertiary) 0%,
+    color-mix(in srgb, var(--accent) 6%, transparent) 40%,
+    var(--bg-tertiary) 60%,
+    var(--bg-tertiary) 100%
+  );
+  background-size: 200% 100%;
+  animation: rl-skeleton-shimmer 1.2s linear infinite;
+}
+
+.light .rl-skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--bg-tertiary) 0%,
+    color-mix(in srgb, var(--text-primary) 4%, transparent) 40%,
+    var(--bg-tertiary) 60%,
+    var(--bg-tertiary) 100%
+  );
+  background-size: 200% 100%;
+}
+
+/* ---------------------------------------------- leak 2: the streaming pulse -- */
+
+/*
+ * redstyle's @keyframes streaming-pulse glows rgba(239,68,68,.15)
+ * (base.css:164-165). The live scan view IS redScan's product, so this is the
+ * most visible leak of the eight.
+ */
+@keyframes rl-streaming-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 8px 2px color-mix(in srgb, var(--accent) 15%, transparent);
+  }
+}
+
+.rl-streaming-pulse {
+  animation: rl-streaming-pulse 1.5s ease-in-out infinite;
+}
+
+/* ------------------------------------------- leak 3: the destructive button -- */
+
+/*
+ * redstyle's Button variant="destructive" is bg-red-600 text-white
+ * (components/Button.tsx:17): the Tailwind palette, not a token, so it ignores
+ * the brand AND ignores --error.
+ *
+ * bg-error text-accent-foreground is NOT the fix: in dark that is #ffffff on
+ * #f87171, which measures 2.77, worse than the leak it replaces (4.83) and below
+ * even the 3.0 non-text floor. The derived --error-foreground is black in dark
+ * (7.59) and white in light (6.47), and the contrast gate checks that pair on
+ * every brand.
+ */
+.rl-danger-button {
+  background: var(--error);
+  color: var(--error-foreground, #ffffff);
+  border-color: color-mix(in srgb, var(--error) 65%, transparent);
+}
+
+/* `black`, the CSS keyword, not a hex literal: the two var() fallbacks below are
+   the only hex this file is allowed and this rule is not one of them. */
+.rl-danger-button:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--error) 85%, black);
+}
+
+.rl-danger-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------ DataTable, the phone card mode -- */
+
+/*
+ * A dense table is the right shape for a desk and the wrong one for a 390px
+ * screen: the columns do not fit, so the row either scrolls sideways or it
+ * truncates. Below the sm breakpoint each row becomes a block card, each cell
+ * states its own column name from its data-label, and the header row is dropped
+ * because every cell now carries its own.
+ *
+ * Two refinements carried over from redoffice, which proved both: a cell with no
+ * data-label (a row's actions) wraps from the left instead of being labelled,
+ * and the desktop column clamps are RELEASED in card mode, because a card has
+ * the full width and a clamp there hides text for no reason.
+ */
+@media (max-width: 639px) {
+  .rl-card-table,
+  .rl-card-table tbody,
+  .rl-card-table tfoot,
+  .rl-card-table tr,
+  .rl-card-table td {
+    display: block;
+    width: auto;
+  }
+
+  .rl-card-table thead {
+    display: none;
+  }
+
+  .rl-card-table tr {
+    padding: 0.5rem;
+  }
+
+  .rl-card-table tbody tr + tr {
+    border-top: 1px solid var(--border);
+  }
+
+  .rl-card-table td {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.125rem 0;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    max-width: none;
+    overflow: visible;
+    text-overflow: clip;
+  }
+
+  .rl-card-table td:not([data-label]) {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 0.375rem;
+  }
+
+  .rl-card-table td[data-label]::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text-tertiary, #525252);
+  }
+
+  .rl-card-table td:empty {
+    display: none;
+  }
+
+  /* A card is already a block; the horizontal scroller it sat in is not. */
+  .rl-card-table-wrap {
+    overflow-x: visible;
+  }
+}
+
+/*
+ * A column hidden below a breakpoint, and the reason it cannot be a Tailwind
+ * `hidden sm:table-cell`.
+ *
+ * `.rl-card-table td` sets `display: flex` inside the card-mode media query at
+ * (0,1,1), which OUTRANKS `.hidden` at (0,1,0), so a Tailwind-hidden column
+ * reappears on exactly the screen it was hidden for. These rules carry the
+ * breakpoint themselves and the card-mode override below is a compound selector
+ * at (0,2,1), so it wins.
+ */
+.rl-col-hide-sm,
+.rl-col-hide-md,
+.rl-col-hide-lg {
+  display: none;
+}
+
+@media (min-width: 640px) {
+  .rl-col-hide-sm {
+    display: table-cell;
+  }
+}
+
+@media (min-width: 768px) {
+  .rl-col-hide-md {
+    display: table-cell;
+  }
+}
+
+@media (min-width: 1024px) {
+  .rl-col-hide-lg {
+    display: table-cell;
+  }
+}
+
+@media (max-width: 639px) {
+  .rl-card-table td.rl-col-hide-sm,
+  .rl-card-table td.rl-col-hide-md,
+  .rl-card-table td.rl-col-hide-lg {
+    display: none;
+  }
+}
+
+/* ------------------------------------------------- InfoTip, the 44px target -- */
+
+/*
+ * The hit area, not a decoration: 15px of invisible inset on every side takes a
+ * 16px marker past 44px without moving one pixel on screen. It applies only
+ * under a coarse pointer, so a mouse keeps the small target it can hit.
+ */
+@media (pointer: coarse) {
+  .rl-tap-halo {
+    position: relative;
+  }
+
+  .rl-tap-halo::after {
+    content: '';
+    position: absolute;
+    inset: -15px;
+  }
+}
+
+/* ------------------------------------------------- Tooltip, where anchored -- */
+
+/*
+ * The fallback is the DEFAULT and the API is the upgrade, which is the right way
+ * round: an absolutely positioned bubble inside a `position: relative` wrapper
+ * works in every browser, and anchor positioning adds the one thing it cannot
+ * do, which is escape an `overflow: hidden` ancestor (a table cell, a scrolled
+ * card). A browser without the API therefore gets a correct tooltip rather than
+ * a hidden one.
+ */
+@supports (anchor-name: --rl-tooltip) {
+  .rl-tooltip-anchor {
+    anchor-name: --rl-tooltip;
+  }
+
+  .rl-tooltip {
+    position: fixed;
+    position-anchor: --rl-tooltip;
+    position-area: top center;
+    position-try-fallbacks: flip-block;
+    left: auto;
+    right: auto;
+    bottom: auto;
+    top: auto;
+    margin: 0 0 0.375rem;
+    transform: none;
+  }
+}
+
+/* ------------------------------------------------------- reduced motion -- */
+
+/*
+ * Every animation this file declares is a decoration on a fact the surface
+ * already states in text, so all of them stop. The raised shadow of an open
+ * sheet is not here and does not stop: it announces the surface rather than the
+ * motion.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .rl-skeleton,
+  .rl-streaming-pulse {
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+  }
+
+  .rl-sheet,
+  .rl-sheet-backdrop {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* -------------------------------------------- BottomSheet and Drawer motion -- */
+
+/*
+ * One implementation, two presentations: below md it rises from the bottom edge,
+ * at md and up it slides in from the right. The keyframes live here rather than
+ * in the app's globals.css because the component ships in this package and an
+ * adopter with no redScan globals must still get the motion.
+ */
+@keyframes rl-sheet-up {
+  from {
+    transform: translateY(100%);
+  }
+  to {
+    transform: translateY(0);
+  }
+}
+
+@keyframes rl-sheet-in {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes rl-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.rl-sheet-backdrop {
+  animation: rl-backdrop-in 200ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+.rl-sheet {
+  animation: rl-sheet-up 260ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
+@media (min-width: 768px) {
+  .rl-sheet {
+    animation-name: rl-sheet-in;
+  }
+}

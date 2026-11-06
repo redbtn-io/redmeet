@@ -1,7 +1,8 @@
 import 'server-only';
 import { NextResponse } from 'next/server';
 
-import { REGISTRY, deploymentBrand } from '@redbtn/redlabel/brands';
+import { deploymentBrand } from '@redbtn/redlabel';
+import { REGISTRY } from '@redbtn/redlabel/brands';
 import type { SessionResult, SessionUser } from '@/lib/session';
 import { resolveSession } from '@/lib/session';
 

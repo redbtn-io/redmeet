@@ -2,8 +2,10 @@ import { headers } from 'next/headers';
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
-import { signInUrl } from '@redbtn/redlabel/auth';
-import { REGISTRY, deploymentBrand } from '@redbtn/redlabel/brands';
+import { deploymentBrand, signInUrl } from '@redbtn/redlabel';
+import { REGISTRY } from '@redbtn/redlabel/brands';
+
+import { ThemeToggle } from '@/components/ThemeToggle';
 
 import { getConfig } from '@/lib/config';
 import { getAuth } from '@/lib/session';
@@ -126,6 +128,7 @@ export default async function Landing() {
           <p className="ml-auto text-xs text-text-secondary">
             Part of the redbtn family, automate everything.
           </p>
+          <ThemeToggle className="ml-2" />
         </div>
       </footer>
     </div>

@@ -292,7 +292,7 @@ function TimePicker({
       {loadingTimes ? (
         <>
           <p className="text-center text-text-secondary">Loading available times...</p>
-          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-white/10 border-t-white/60" />
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-4 border-border border-t-text-primary" />
         </>
       ) : (
         <>

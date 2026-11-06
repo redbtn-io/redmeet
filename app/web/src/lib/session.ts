@@ -2,7 +2,8 @@ import { timingSafeEqual } from 'node:crypto';
 import 'server-only';
 
 import { createRedAuth } from '@redbtn/redauth';
-import { assertDeploymentBrand } from '@redbtn/redlabel/brands';
+import { assertDeploymentAuth, assertDeploymentBrand } from '@redbtn/redlabel';
+import { REGISTRY } from '@redbtn/redlabel/brands';
 
 import { getConfig } from '@/lib/config';
 import { logger } from '@/lib/log';
@@ -22,9 +23,12 @@ import { logger } from '@/lib/log';
  * Fails closed on a missing secret: an app with no JWT_SECRET admits nobody,
  * rather than admitting everybody.
  *
- * v0 note: `assertDeploymentAuth` (the redlabel deployment-auth assertion)
- * lands with the canonical redlabel port. The brand assertion below uses the
- * v0 shim registry.
+ * The deployment assertions are redlabel's, called here on the first
+ * request and never at module load: `REDMEET_DEFAULT_BRAND_ID` must name
+ * this deployment's brand, and the brand's auth plan must agree with the
+ * environment it finds (its named secret present, the declared mode
+ * matching). A container that would verify sessions against the wrong
+ * brand, or against no secret, refuses to boot its auth instead.
  */
 
 export interface SessionUser {
@@ -62,8 +66,8 @@ let checked = false;
  */
 export function getAuth(): ReturnType<typeof createRedAuth> {
   if (!checked) {
-    const host = new URL(getConfig().baseUrl || 'https://meet.redbtn.io').host;
-    assertDeploymentBrand(host);
+    assertDeploymentBrand(process.env);
+    assertDeploymentAuth(REGISTRY, process.env);
     checked = true;
   }
   if (!auth) {

@@ -91,6 +91,36 @@ booking flow, new foundations.
   who never sets them sees no change. The pure math lives in
   `@redmeet/core` (`availability.ts`); the busy blocks come from the
   gateway, never from the client.
+- **Brand and theme: canonical `@redbtn/redlabel`, ported from redscan.**
+  `packages/redlabel` is the estate canonical package (brand schema,
+  registry, host resolution, theme emitters, themable primitives),
+  vendored the way redscan vendors it, NOT the v0 shim it replaced. The
+  library code and its test suite are the canonical ones; the deployment
+  data is redMeet's: the registry (`src/brands`) registers the shipped
+  reference brands (`redbtn`, `redbtn-beta`, `medshield`, the package's
+  fixtures) plus redMeet's own brand (`src/brands/redmeet.ts`, id
+  `redmeet`, hosts `meet.redbtn.io`, ecosystem auth, empty token
+  overrides: the redbtn face IS bare redstyle). The deployment names
+  itself with `REDMEET_DEFAULT_BRAND_ID` (the canonical env contract,
+  per-product prefix), asserted together with the auth plan on first
+  request in `lib/session.ts`, never at module load. Theming: the root
+  layout renders `brandStyleProps(brand)` and the literal `dark` default
+  class on `<html>`, with `ThemeStyle` and `BrandThemeScript` in `<head>`;
+  the boot script applies the stored theme (localStorage key
+  `redstyle-theme`, default dark) synchronously before first paint, so
+  the served `dark` class is a default, not a pin. redstyle's
+  `tokens.css` carries both schemes (`:root`/`:root.dark` and
+  `:root.light`), so light is a real scheme. The theme toggle is the
+  app's own (`web/src/components/ThemeToggle.tsx`): the canonical split
+  is redLabel owns the machinery, the app owns the control, and the
+  toggle speaks the boot script's protocol exactly. Brand assets live in
+  `web/public/brand/redbtn` (copied from the package's `assets/` by its
+  icons script); the proxy exempts `/brand/` on purpose, because gating
+  it would 302 a signed-out visitor's brand mark to the sign-in host.
+  `web/src/lib/brand.ts` registers the registry once via
+  `configureBrand`; server code takes the request's brand from
+  `getBrand()` and never imports the registry into a client graph (it is
+  `server-only` by enforcement, not convention).
 - **The app owns its store.** Mongo via the house mongoose singleton:
   `MeetHost`, `MeetType`, `MeetBooking`. A booking is only `confirmed`
   after the calendar event write succeeds; a failed write surfaces to the

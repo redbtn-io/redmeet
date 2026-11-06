@@ -1,0 +1,110 @@
+{
+  "medshield/apple-touch-icon.png": {
+    "sha256": "62a9b89e23555dfe74e39e7686de7da5dcae3bf73d5f22e408ff608dfe4f4be9",
+    "width": 180,
+    "height": 180,
+    "bytes": 3833
+  },
+  "medshield/favicon-16x16.png": {
+    "sha256": "19bef935c32691caed2dcf0c39dd20367d9eea23ab1e3cb233a1b0d481721457",
+    "width": 16,
+    "height": 16,
+    "bytes": 459
+  },
+  "medshield/favicon-32x32.png": {
+    "sha256": "2a867be55a53632a53c36cde773b2c85a49bb8cb4010629b6d5cfca92a5b8f02",
+    "width": 32,
+    "height": 32,
+    "bytes": 783
+  },
+  "medshield/favicon.ico": {
+    "sha256": "920bf102e35452d216c2ff7ae1009019bd53c473c29befed15f686a2699838fa",
+    "width": 16,
+    "height": 16,
+    "bytes": 1280
+  },
+  "medshield/icon-192.png": {
+    "sha256": "66a8cde47bca66955ee1772a7e64822ace5953ad39fe40fb3d3645e90d69b05f",
+    "width": 192,
+    "height": 192,
+    "bytes": 4294
+  },
+  "medshield/icon-384.png": {
+    "sha256": "233d76a4d4e74d9c7c9e1ad419ac849b60cff45a58930279a1994d09878ca61d",
+    "width": 384,
+    "height": 384,
+    "bytes": 9192
+  },
+  "medshield/icon-512.png": {
+    "sha256": "bfec51e43b2c0f922d0c51d0ea4ed07e0be703641363f99d2497e31a351be6ef",
+    "width": 512,
+    "height": 512,
+    "bytes": 10175
+  },
+  "medshield/icon-maskable-512.png": {
+    "sha256": "a49276c14151ee6ae4157cdbcf39987575142ab0bc7445246e25247b8d89de22",
+    "width": 512,
+    "height": 512,
+    "bytes": 10155
+  },
+  "medshield/logo.png": {
+    "sha256": "0185b6a59ef1910d6627ced382e7268d4138c99a7a7b66e3b755a07f347bd7fd",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 16327
+  },
+  "redbtn/apple-touch-icon.png": {
+    "sha256": "5704838a9bd2be7591c8142cf5bab04a2e5d4067677ea19ba9c40c88e583ddd1",
+    "width": 180,
+    "height": 180,
+    "bytes": 9733
+  },
+  "redbtn/favicon-16x16.png": {
+    "sha256": "386a1a7c4b3196137be7fbd6b486fb4a10150738cac7511ee3063a9947fc93b1",
+    "width": 16,
+    "height": 16,
+    "bytes": 612
+  },
+  "redbtn/favicon-32x32.png": {
+    "sha256": "922d02c80a4d38c25b2696592660e8cc54c020714cb4179354dcda3205b23fd4",
+    "width": 32,
+    "height": 32,
+    "bytes": 1361
+  },
+  "redbtn/favicon.ico": {
+    "sha256": "98ce5edc969ee04709cfa848cf3109cef26e77256d1f2411f46db99616863c91",
+    "width": 16,
+    "height": 16,
+    "bytes": 2011
+  },
+  "redbtn/icon-192.png": {
+    "sha256": "3c40bd69c97e442685096c696e995d8616ad320c56dd6364e25b1a1935776cdb",
+    "width": 192,
+    "height": 192,
+    "bytes": 16172
+  },
+  "redbtn/icon-384.png": {
+    "sha256": "f7a10c4ff0533e22bda10875d0baaf25e2a6ce1b6d210b107aa51c09ecabb760",
+    "width": 384,
+    "height": 384,
+    "bytes": 44028
+  },
+  "redbtn/icon-512.png": {
+    "sha256": "4ecfd38ae5d80fcf99400ac1b4011f9bba03b68818e535372c22f0f436b54a08",
+    "width": 512,
+    "height": 512,
+    "bytes": 73372
+  },
+  "redbtn/icon-maskable-512.png": {
+    "sha256": "2d8d3f2c2cc1a84e2530387a66fd5f9998bada94a501fb53f495abb642b9857f",
+    "width": 512,
+    "height": 512,
+    "bytes": 32825
+  },
+  "redbtn/logo.png": {
+    "sha256": "0e2038e7110934dc12d16e8364a4b4be01bf298c29404063538d773199b43e0a",
+    "width": 1024,
+    "height": 1024,
+    "bytes": 244490
+  }
+}

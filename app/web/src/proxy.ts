@@ -1,8 +1,8 @@
 import { NextResponse, type NextRequest } from 'next/server';
 
 import { resolveEdgeSession, resolveEdgeSessionLive } from '@redbtn/redauth/edge';
-import { authPlan, signInUrl } from '@redbtn/redlabel/auth';
-import { REGISTRY, deploymentBrand, resolveBrand } from '@redbtn/redlabel/brands';
+import { authPlan, deploymentBrand, resolveBrand, signInUrl } from '@redbtn/redlabel';
+import { REGISTRY } from '@redbtn/redlabel/brands';
 
 /**
  * The gate: redirect, and nothing else.
@@ -16,7 +16,7 @@ import { REGISTRY, deploymentBrand, resolveBrand } from '@redbtn/redlabel/brands
  * because the edge degrades OPEN when accounts cannot answer.
  */
 export const PATHNAME_HEADER = 'x-redmeet-pathname';
-const NONCE_HEADER = 'x-redmeet-nonce';
+export const NONCE_HEADER = 'x-redmeet-nonce';
 
 /** Public surface. `/` is the landing page with the sign-in button. */
 const ALWAYS_OPEN = ['/', '/api/health'];
@@ -42,6 +42,13 @@ function isExempt(pathname: string): boolean {
   // when adding to the home screen). Static brand assets, nothing sensitive.
   if (pathname === '/manifest.webmanifest') return true;
   if (/^\/icons\/[A-Za-z0-9_.-]+\.(png|svg)$/.test(pathname)) return true;
+  // Brand assets (redlabel): the mark, the favicons, the touch icon. The
+  // canonical adoption guide is explicit that this exemption is not
+  // optional: without it the gate 302s a signed-out visitor's brand mark
+  // and the iOS touch icon to the sign-in host, a broken image on the
+  // landing page and an uninstallable PWA.
+  if (pathname.startsWith('/brand/')) return true;
+  if (pathname === '/apple-touch-icon.png') return true;
   // Public booking pages: /<slug> and /<slug>/<meeting>. Guests have no
   // account, that is the point of the product. A first segment from
   // RESERVED_FIRST is an app route and stays gated.
