@@ -10,8 +10,23 @@ import { model, models, Schema, Types, type Model } from 'mongoose';
  * The guest only ever sees a confirmation when the status is
  * `confirmed` (or an honest "booked, calendar invite pending" state:
  * never a fake event id).
+ *
+ * Slot integrity (Epic 0): a PARTIAL UNIQUE index on (hostId, start)
+ * covers the live statuses (pending_calendar, confirmed,
+ * calendar_failed), so MongoDB itself rejects a second live booking
+ * for the same host and start. A cancelled booking falls out of the
+ * index, which is what frees its slot. createBooking claims the slot
+ * with an upsert keyed on that index (see lib/bookings.ts), so two
+ * concurrent requests for the same slot cannot both pass.
  */
 export type BookingStatus = 'pending_calendar' | 'confirmed' | 'calendar_failed' | 'cancelled';
+
+/** Statuses that hold their slot against new bookings. */
+export const SLOT_HOLDING_STATUSES: BookingStatus[] = [
+  'pending_calendar',
+  'confirmed',
+  'calendar_failed',
+];
 
 export interface MeetBookingDoc {
   _id: Types.ObjectId;
@@ -29,6 +44,14 @@ export interface MeetBookingDoc {
   /** Google event id, set only when the write succeeded. */
   calendarEventId?: string;
   calendarError?: string;
+  /** How many times a calendar write has been attempted for this booking. */
+  calendarAttempts: number;
+  /** When the most recent calendar write was attempted. */
+  lastCalendarAttemptAt?: Date;
+  /** Random token written by the atomic slot claim; see lib/bookings.ts. */
+  claimToken?: string;
+  /** When the host cancelled the booking. */
+  cancelledAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -52,11 +75,23 @@ const meetBookingSchema = new Schema<MeetBookingDoc>(
     calendarId: String,
     calendarEventId: String,
     calendarError: String,
+    calendarAttempts: { type: Number, default: 0 },
+    lastCalendarAttemptAt: Date,
+    claimToken: String,
+    cancelledAt: Date,
   },
   { timestamps: true },
 );
 
-meetBookingSchema.index({ hostId: 1, start: 1 });
+meetBookingSchema.index(
+  { hostId: 1, start: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { status: { $in: SLOT_HOLDING_STATUSES } },
+  },
+);
+// The reconciliation sweep scans by status and age.
+meetBookingSchema.index({ status: 1, updatedAt: 1 });
 
 export const MeetBooking: Model<MeetBookingDoc> =
   models.MeetBooking ?? model<MeetBookingDoc>('MeetBooking', meetBookingSchema);

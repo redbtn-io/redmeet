@@ -75,6 +75,7 @@ export default function BookingFlow({
   const [calendarConnected, setCalendarConnected] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<string | null>(null);
+  const [resultBookingId, setResultBookingId] = useState<string | null>(null);
 
   const cells = useMemo(() => buildMonth(year, month), [year, month]);
 
@@ -175,6 +176,7 @@ export default function BookingFlow({
               calendarConnected={calendarConnected}
               setSubmitting={setSubmitting}
               setResult={setResult}
+              setResultBookingId={setResultBookingId}
             />
           )}
         </div>
@@ -188,7 +190,16 @@ export default function BookingFlow({
           </div>
         </div>
       )}
-      {result && <ResultMessage message={result} onClose={() => setResult(null)} />}
+      {result && (
+        <ResultMessage
+          message={result}
+          bookingId={resultBookingId}
+          onClose={() => {
+            setResult(null);
+            setResultBookingId(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -273,6 +284,7 @@ function TimePicker({
   calendarConnected,
   setSubmitting,
   setResult,
+  setResultBookingId,
 }: {
   slug: string;
   meeting: FlowMeeting;
@@ -286,6 +298,7 @@ function TimePicker({
   calendarConnected: boolean;
   setSubmitting: (b: boolean) => void;
   setResult: (m: string) => void;
+  setResultBookingId: (id: string | null) => void;
 }) {
   return (
     <div className="w-full space-y-4 overflow-y-auto p-1" id="time-picker">
@@ -334,6 +347,7 @@ function TimePicker({
             time={time}
             setSubmitting={setSubmitting}
             setResult={setResult}
+            setResultBookingId={setResultBookingId}
           />
         </>
       )}
@@ -348,6 +362,7 @@ function GuestForm({
   time,
   setSubmitting,
   setResult,
+  setResultBookingId,
 }: {
   slug: string;
   meeting: FlowMeeting;
@@ -355,6 +370,7 @@ function GuestForm({
   time: string | null;
   setSubmitting: (b: boolean) => void;
   setResult: (m: string) => void;
+  setResultBookingId: (id: string | null) => void;
 }) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -409,15 +425,18 @@ function GuestForm({
         day: 'numeric',
       });
       if (res.ok && data.booking?.status === 'confirmed') {
+        setResultBookingId(data.booking.id ?? null);
         setResult(`Scheduled for ${time} on ${pretty}`);
         setName('');
         setEmail('');
         setPhoneNumber('');
       } else if (res.ok && data.booking) {
+        setResultBookingId(data.booking.id ?? null);
         setResult(
           `Your request is in for ${time} on ${pretty}. The calendar invite hit a snag on our side, so watch your email for confirmation.`,
         );
       } else if (res.status === 409) {
+        setResultBookingId(null);
         setResult(`That time was just taken. Pick another time and try again.`);
       } else {
         setError(data.error ?? 'Something went wrong. Try again.');
@@ -493,18 +512,36 @@ function GuestForm({
   );
 }
 
-function ResultMessage({ message, onClose }: { message: string; onClose: () => void }) {
+function ResultMessage({
+  message,
+  bookingId,
+  onClose,
+}: {
+  message: string;
+  bookingId?: string | null;
+  onClose: () => void;
+}) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
       <div className="w-full max-w-md rounded-2xl border border-border bg-bg-secondary p-8 text-center">
         <div className="text-lg text-text-primary">{message}</div>
-        <button
-          onClick={onClose}
-          className="mt-6 cursor-pointer rounded-xl px-5 py-2.5 font-medium text-white transition hover:brightness-110"
-          style={{ backgroundColor: 'var(--primary-color)' }}
-        >
-          Close
-        </button>
+        <div className="mt-6 flex items-center justify-center gap-3">
+          {bookingId && (
+            <a
+              href={`/booked/${bookingId}`}
+              className="cursor-pointer rounded-xl border border-border px-5 py-2.5 font-medium text-text-primary transition hover:brightness-110"
+            >
+              View your booking
+            </a>
+          )}
+          <button
+            onClick={onClose}
+            className="cursor-pointer rounded-xl px-5 py-2.5 font-medium text-white transition hover:brightness-110"
+            style={{ backgroundColor: 'var(--primary-color)' }}
+          >
+            Close
+          </button>
+        </div>
       </div>
     </div>
   );

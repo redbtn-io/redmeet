@@ -40,6 +40,7 @@ export const RESERVED_SLUGS = new Set([
   'schedule',
   'booking',
   'book',
+  'booked',
   '_next',
 ]);
 

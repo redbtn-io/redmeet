@@ -32,6 +32,7 @@ interface Booking {
   end: string;
   status: string;
   meetingName: string;
+  calendarError: string | null;
 }
 
 /**
@@ -47,6 +48,13 @@ export default function Dashboard() {
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  async function loadBookings() {
+    const b = await fetch('/api/v0/bookings').then((r) => (r.ok ? r.json() : { bookings: [] }));
+    setBookings(b.bookings ?? []);
+  }
 
   useEffect(() => {
     let live = true;
@@ -66,6 +74,33 @@ export default function Dashboard() {
       live = false;
     };
   }, []);
+
+  async function actOnBooking(b: Booking, action: 'cancel' | 'retry-calendar') {
+    if (
+      action === 'cancel' &&
+      !window.confirm(`Cancel ${b.meetingName} with ${b.guestName}? The guest is notified and the slot opens up.`)
+    ) {
+      return;
+    }
+    setBusyId(b.id);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/v0/bookings/${b.id}/${action}`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setActionError(data.error ?? 'That did not work. Try again.');
+      } else if (action === 'cancel' && data.calendarRemoved === false) {
+        setActionError(
+          'Booking cancelled, but the calendar event could not be removed. Delete it from your calendar so the slot fully opens up.',
+        );
+      }
+      await loadBookings();
+    } catch {
+      setActionError('Could not reach the server. Try again.');
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   const grouped = useMemo(() => {
     const map = new Map<string, Booking[]>();
@@ -170,6 +205,11 @@ export default function Dashboard() {
       </Card>
 
       <h3 className="mb-3 text-lg font-semibold">Agenda</h3>
+      {actionError && (
+        <p className="mb-3 rounded-lg border border-accent/40 px-3 py-2 text-sm text-text-secondary">
+          {actionError}
+        </p>
+      )}
       {bookings.length === 0 ? (
         <Card>
           <p className="text-sm text-text-secondary">
@@ -202,8 +242,8 @@ export default function Dashboard() {
                     return (
                       <div
                         key={b.id}
-                        className={`flex flex-col rounded-lg p-3 text-white ${ongoing ? 'pulse' : ''} ${ended ? 'opacity-35' : ''}`}
-                        style={{ backgroundColor: ended ? '#9ca3af' : host.color }}
+                        className={`flex flex-col rounded-lg p-3 text-white ${ongoing ? 'pulse' : ''} ${ended || b.status === 'cancelled' ? 'opacity-35' : ''}`}
+                        style={{ backgroundColor: ended || b.status === 'cancelled' ? '#9ca3af' : host.color }}
                       >
                         <div className="truncate text-sm font-medium">
                           {b.meetingName} with {b.guestName}
@@ -221,7 +261,37 @@ export default function Dashboard() {
                               not on a calendar yet
                             </span>
                           )}
+                          {b.status === 'cancelled' && (
+                            <span className="ml-2 rounded bg-black/30 px-1.5 py-0.5 text-xs">
+                              cancelled
+                            </span>
+                          )}
                         </div>
+                        {b.status === 'calendar_failed' && b.calendarError && (
+                          <div className="mt-1 truncate text-xs opacity-80" title={b.calendarError}>
+                            Invite failed: {b.calendarError}
+                          </div>
+                        )}
+                        {b.status !== 'cancelled' && !ended && (
+                          <div className="mt-2 flex gap-2">
+                            {(b.status === 'calendar_failed' || b.status === 'pending_calendar') && (
+                              <button
+                                onClick={() => actOnBooking(b, 'retry-calendar')}
+                                disabled={busyId === b.id}
+                                className="cursor-pointer rounded bg-black/30 px-2 py-1 text-xs text-white transition hover:bg-black/40 disabled:opacity-50"
+                              >
+                                {busyId === b.id ? 'Working...' : 'Retry invite'}
+                              </button>
+                            )}
+                            <button
+                              onClick={() => actOnBooking(b, 'cancel')}
+                              disabled={busyId === b.id}
+                              className="cursor-pointer rounded bg-black/30 px-2 py-1 text-xs text-white transition hover:bg-black/40 disabled:opacity-50"
+                            >
+                              Cancel booking
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
