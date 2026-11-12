@@ -1,5 +1,9 @@
 import 'server-only';
 
+import { randomUUID } from 'node:crypto';
+
+import type { HydratedDocument } from 'mongoose';
+
 import {
   availableSlots,
   normalizeAvailabilityWindows,
@@ -10,16 +14,20 @@ import {
   type Slot,
 } from '@redmeet/core';
 
-import { createCalendarEvent, getBusyIntervals } from '@/lib/calendar';
+import { createCalendarEvent, deleteCalendarEvent, getBusyIntervals } from '@/lib/calendar';
 import {
   CalendarNotConnectedError,
   resolveHostCalendarSelection,
 } from '@/lib/calendar-auth';
 import { getDb } from '@/lib/db';
 import { logger } from '@/lib/log';
-import { MeetBooking, type MeetBookingDoc } from '@/models/meet-booking';
+import {
+  MeetBooking,
+  SLOT_HOLDING_STATUSES,
+  type MeetBookingDoc,
+} from '@/models/meet-booking';
 import type { MeetHostDoc } from '@/models/meet-host';
-import type { MeetTypeDoc } from '@/models/meet-type';
+import { MeetType, type MeetTypeDoc } from '@/models/meet-type';
 
 /**
  * Booking orchestration. Availability is the original's slot math over
@@ -48,7 +56,10 @@ export async function busyForWindow(
   await getDb();
   const own = await MeetBooking.find({
     hostId: host._id,
-    status: { $in: ['pending_calendar', 'confirmed'] },
+    // Every live status holds its slot, calendar_failed included: a
+    // booking whose invite failed is still a booking, and its slot
+    // must not be handed to a second guest while it waits for a retry.
+    status: { $in: SLOT_HOLDING_STATUSES },
     start: { $lt: new Date(timeMaxMs) },
     end: { $gt: new Date(timeMinMs) },
   });
@@ -113,15 +124,101 @@ export async function availabilityFor(
 export class BookingConflictError extends Error {}
 
 /**
+ * One calendar write attempt for a booking that already exists.
+ * Updates the booking's status, attempt counter, and error in place
+ * and saves. Returns where the booking landed:
+ *
+ *   confirmed  the event is on the host's calendar, invite sent
+ *   pending    the host has no connected calendar; the booking stands
+ *              as a redMeet booking and blocks its slot
+ *   failed     the write was attempted and failed; the booking keeps
+ *              its slot and waits for a retry
+ */
+export async function attemptCalendarWrite(
+  host: MeetHostDoc,
+  type: MeetTypeDoc,
+  booking: HydratedDocument<MeetBookingDoc>,
+): Promise<'confirmed' | 'pending' | 'failed'> {
+  const resolved = await resolveHostCalendarSelection(host);
+  if (!resolved) {
+    // No calendar to write to: the booking stands as a redMeet booking
+    // (it blocks the slot), honestly flagged as not on a calendar. It
+    // must NOT be written to anyone else's calendar.
+    booking.status = 'pending_calendar';
+    booking.calendarError = 'Host calendar not connected';
+    await booking.save();
+    return 'pending';
+  }
+
+  booking.calendarAttempts = (booking.calendarAttempts ?? 0) + 1;
+  booking.lastCalendarAttemptAt = new Date();
+  try {
+    const { eventId, calendarId } = await createCalendarEvent(
+      { token: resolved.token, connectionId: resolved.writeTarget.connectionId },
+      host.timeZone,
+      resolved.writeTarget.calendarId,
+      {
+        summary: `${type.name} with ${booking.guestName}`,
+        description: [
+          `${booking.guestName}${booking.guestPhone ? `, ${booking.guestPhone}` : ''}`,
+          booking.comments ? `Comments: ${booking.comments}` : '',
+          `Booked via redMeet (https://meet.redbtn.io/${host.slug}/${type.slug})`,
+        ]
+          .filter(Boolean)
+          .join('\n'),
+        location: 'Virtual',
+        startMs: booking.start.getTime(),
+        endMs: booking.end.getTime(),
+        guestName: booking.guestName,
+        guestEmail: booking.guestEmail,
+        guestPhone: booking.guestPhone ?? '',
+        comments: booking.comments ?? '',
+      },
+    );
+    booking.status = 'confirmed';
+    booking.calendarEventId = eventId;
+    booking.calendarId = calendarId;
+    booking.calendarError = undefined;
+    await booking.save();
+    return 'confirmed';
+  } catch (error) {
+    if (error instanceof CalendarNotConnectedError) {
+      booking.status = 'pending_calendar';
+      booking.calendarError = 'Host calendar not connected';
+      await booking.save();
+      return 'pending';
+    }
+    booking.status = 'calendar_failed';
+    booking.calendarError = String(error).slice(0, 500);
+    logger.error('calendar write failed for booking', {
+      bookingId: String(booking._id),
+      attempt: booking.calendarAttempts,
+      error: booking.calendarError,
+    });
+    await booking.save();
+    return 'failed';
+  }
+}
+
+/**
  * Book one slot. The offered slot is recomputed server-side and must
- * match the guest's pick exactly; then the booking is recorded and the
- * calendar event written. The returned booking carries its true status.
+ * match the guest's pick exactly; then the slot is CLAIMED atomically
+ * and the calendar event written. The returned booking carries its
+ * true status.
+ *
+ * The claim is a findOneAndUpdate upsert against the partial unique
+ * index on (hostId, start) over the live statuses: if a live booking
+ * already holds the slot, the filter matches it and the upsert
+ * returns that booking untouched, which the claim token detects; if
+ * two claims race past the filter, the unique index lets exactly one
+ * insert through and the loser gets a duplicate key error. Either way
+ * exactly one booking holds the slot, and the loser is a 409.
  */
 export async function createBooking(
   host: MeetHostDoc,
   type: MeetTypeDoc,
   input: BookingInput,
-): Promise<MeetBookingDoc> {
+): Promise<HydratedDocument<MeetBookingDoc>> {
   const minutes = parseTimeLabel(input.time);
   if (minutes === null) throw new BookingConflictError('That time is not a bookable slot');
   const startMs = zonedTimeToUtcMs(input.date, minutes, host.timeZone);
@@ -133,70 +230,138 @@ export async function createBooking(
   }
 
   await getDb();
-  const booking = await MeetBooking.create({
-    hostId: host._id,
-    meetTypeId: type._id,
-    guestName: input.name,
-    guestEmail: input.email,
-    guestPhone: input.phone ?? '',
-    comments: input.comments ?? '',
-    start: new Date(slot.startMs),
-    end: new Date(slot.endMs),
-    status: 'pending_calendar',
-  });
+  const claimToken = randomUUID();
+  let booking: HydratedDocument<MeetBookingDoc> | null;
+  try {
+    booking = await MeetBooking.findOneAndUpdate(
+      {
+        hostId: host._id,
+        start: new Date(slot.startMs),
+        status: { $in: SLOT_HOLDING_STATUSES },
+      },
+      {
+        $setOnInsert: {
+          hostId: host._id,
+          meetTypeId: type._id,
+          guestName: input.name,
+          guestEmail: input.email,
+          guestPhone: input.phone ?? '',
+          comments: input.comments ?? '',
+          start: new Date(slot.startMs),
+          end: new Date(slot.endMs),
+          status: 'pending_calendar',
+          claimToken,
+          calendarAttempts: 0,
+        },
+      },
+      { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
+    );
+  } catch (error) {
+    if ((error as { code?: number }).code === 11000) {
+      throw new BookingConflictError('That slot was just taken or is no longer available');
+    }
+    throw error;
+  }
+  if (!booking || booking.claimToken !== claimToken) {
+    // The upsert matched a live booking that already holds this slot.
+    throw new BookingConflictError('That slot was just taken or is no longer available');
+  }
 
-  const resolved = await resolveHostCalendarSelection(host);
-  if (!resolved) {
-    // No calendar to write to: the booking stands as a redMeet booking
-    // (it blocks the slot), honestly flagged as not on a calendar. It
-    // must NOT be written to anyone else's calendar.
-    booking.status = 'pending_calendar';
-    booking.calendarError = 'Host calendar not connected';
+  await attemptCalendarWrite(host, type, booking);
+  return booking;
+}
+
+/** Total calendar write attempts the automatic sweep will make
+ *  (the initial write plus its retries) before it leaves a failed
+ *  booking alone with its badge. Manual retries are the host's call
+ *  and are not capped by this. */
+export const MAX_AUTO_CALENDAR_ATTEMPTS = 4;
+
+const RETRY_DELAYS_MS = [1000, 3000];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Retry the calendar write for a booking whose invite did not land.
+ * Up to 3 attempts with backoff inside the call. With `auto: true`
+ * (the reconciliation sweep) the total attempt budget is capped at
+ * MAX_AUTO_CALENDAR_ATTEMPTS; a manual retry from the dashboard is
+ * the host explicitly asking, so it always runs.
+ */
+export async function retryBookingCalendar(
+  host: MeetHostDoc,
+  booking: HydratedDocument<MeetBookingDoc>,
+  opts: { auto?: boolean } = {},
+): Promise<HydratedDocument<MeetBookingDoc>> {
+  if (booking.status === 'confirmed' || booking.status === 'cancelled') return booking;
+  if (opts.auto && (booking.calendarAttempts ?? 0) >= MAX_AUTO_CALENDAR_ATTEMPTS) {
+    return booking;
+  }
+  await getDb();
+  const type = await MeetType.findById(booking.meetTypeId);
+  if (!type) {
+    booking.calendarError = 'Meeting type no longer exists';
     await booking.save();
     return booking;
   }
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (attempt > 0) await sleep(RETRY_DELAYS_MS[attempt - 1] ?? 3000);
+    const outcome = await attemptCalendarWrite(host, type, booking);
+    if (outcome !== 'failed') break;
+    if (opts.auto && (booking.calendarAttempts ?? 0) >= MAX_AUTO_CALENDAR_ATTEMPTS) break;
+  }
+  return booking;
+}
 
-  try {
-    const { eventId, calendarId } = await createCalendarEvent(
-      { token: resolved.token, connectionId: resolved.writeTarget.connectionId },
-      host.timeZone,
-      resolved.writeTarget.calendarId,
-      {
-        summary: `${type.name} with ${input.name}`,
-        description: [
-          `${input.name}${input.phone ? `, ${input.phone}` : ''}`,
-          input.comments ? `Comments: ${input.comments}` : '',
-          `Booked via redMeet (https://meet.redbtn.io/${host.slug}/${type.slug})`,
-        ]
-          .filter(Boolean)
-          .join('\n'),
-        location: 'Virtual',
-        startMs: slot.startMs,
-        endMs: slot.endMs,
-        guestName: input.name,
-        guestEmail: input.email,
-        guestPhone: input.phone ?? '',
-        comments: input.comments ?? '',
-      },
-    );
-    booking.status = 'confirmed';
-    booking.calendarEventId = eventId;
-    booking.calendarId = calendarId;
-  } catch (error) {
-    if (error instanceof CalendarNotConnectedError) {
-      booking.status = 'pending_calendar';
-      booking.calendarError = 'Host calendar not connected';
-    } else {
-      booking.status = 'calendar_failed';
-      booking.calendarError = String(error).slice(0, 500);
-      logger.error('calendar write failed for booking', {
-        bookingId: String(booking._id),
-        error: booking.calendarError,
-      });
+/**
+ * Cancel a booking from the host's side. The calendar event is
+ * deleted first (the guest gets the cancellation from Google, the
+ * same channel that invited them); then the booking is marked
+ * cancelled, which drops it out of the slot holding index and the
+ * busy computation, so the slot is bookable again.
+ *
+ * If the event delete fails, the booking is STILL cancelled locally
+ * (the host's decision stands) and the failure is kept in
+ * calendarError with `calendarRemoved: false`, because the leftover
+ * event will keep showing the slot busy on the host's calendar until
+ * it is removed there.
+ */
+export async function cancelBooking(
+  host: MeetHostDoc,
+  booking: HydratedDocument<MeetBookingDoc>,
+): Promise<{ booking: MeetBookingDoc; calendarRemoved: boolean | null }> {
+  if (booking.status === 'cancelled') return { booking, calendarRemoved: null };
+
+  let calendarRemoved: boolean | null = null;
+  if (booking.calendarEventId && booking.calendarId) {
+    calendarRemoved = false;
+    const resolved = await resolveHostCalendarSelection(host);
+    if (resolved) {
+      try {
+        await deleteCalendarEvent(
+          { token: resolved.token, connectionId: resolved.writeTarget.connectionId },
+          booking.calendarId,
+          booking.calendarEventId,
+        );
+        calendarRemoved = true;
+      } catch (error) {
+        booking.calendarError =
+          `Booking cancelled, but removing the calendar event failed: ${String(error).slice(0, 300)}`;
+        logger.error('calendar delete failed for cancelled booking', {
+          bookingId: String(booking._id),
+          error: String(error),
+        });
+      }
     }
   }
+
+  booking.status = 'cancelled';
+  booking.cancelledAt = new Date();
+  if (calendarRemoved !== false) booking.calendarError = undefined;
   await booking.save();
-  return booking;
+  return { booking, calendarRemoved };
 }
 
 export function bookingJson(booking: MeetBookingDoc, type?: MeetTypeDoc) {
@@ -212,5 +377,7 @@ export function bookingJson(booking: MeetBookingDoc, type?: MeetTypeDoc) {
     meetingName: type?.name ?? '',
     meetingSlug: type?.slug ?? '',
     calendarEventId: booking.calendarEventId ?? null,
+    calendarError: booking.calendarError ?? null,
+    calendarAttempts: booking.calendarAttempts ?? 0,
   };
 }

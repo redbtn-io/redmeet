@@ -118,6 +118,27 @@ export async function createCalendarEvent(
   return { eventId: event.id, calendarId };
 }
 
+/**
+ * Delete a booking's calendar event, under the host's own credential
+ * and the connection that owns the calendar the event was written to.
+ * sendUpdates 'all', so the guest is told the meeting is cancelled,
+ * matching how the invite reached them. Throws on gateway failure;
+ * the caller (host cancel) decides how to report a removal that did
+ * not land.
+ */
+export async function deleteCalendarEvent(
+  auth: GatewayAuth,
+  calendarId: string,
+  eventId: string,
+): Promise<void> {
+  await callGatewayTool(
+    NAMESPACE,
+    'gcal_events_delete',
+    { calendarId, eventId, sendUpdates: 'all' },
+    auth,
+  );
+}
+
 export interface GoogleAccountSummary {
   connectionId: string;
   email: string;
