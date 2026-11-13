@@ -33,6 +33,7 @@ interface Booking {
   status: string;
   meetingName: string;
   calendarError: string | null;
+  guestJoinUrl?: string | null;
 }
 
 /**
@@ -273,7 +274,27 @@ export default function Dashboard() {
                           </div>
                         )}
                         {b.status !== 'cancelled' && !ended && (
-                          <div className="mt-2 flex gap-2">
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <a
+                              href={`/join/${b.id}?as=host`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="cursor-pointer rounded bg-white px-2 py-1 text-xs font-medium text-black transition hover:bg-white/85"
+                            >
+                              Join meeting
+                            </a>
+                            {b.guestJoinUrl && (
+                              <button
+                                onClick={() => {
+                                  navigator.clipboard
+                                    .writeText(b.guestJoinUrl!)
+                                    .catch(() => undefined);
+                                }}
+                                className="cursor-pointer rounded bg-black/30 px-2 py-1 text-xs text-white transition hover:bg-black/40"
+                              >
+                                Copy guest link
+                              </button>
+                            )}
                             {(b.status === 'calendar_failed' || b.status === 'pending_calendar') && (
                               <button
                                 onClick={() => actOnBooking(b, 'retry-calendar')}

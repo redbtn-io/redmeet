@@ -21,7 +21,7 @@ import {
 } from '@/lib/calendar-auth';
 import { getDb } from '@/lib/db';
 import { logger } from '@/lib/log';
-import { deleteLiveKitRoom, ensureBookingRoom, roomOpensAt } from '@/lib/rooms';
+import { deleteLiveKitRoom, ensureBookingRoom, guestJoinUrlFor, roomOpensAt } from '@/lib/rooms';
 import {
   MeetBooking,
   SLOT_HOLDING_STATUSES,
@@ -151,6 +151,24 @@ export async function attemptCalendarWrite(
     return 'pending';
   }
 
+  // The calendar event carries the guest's join link (Epic 2,
+  // feature 2.3). Bookings made before rooms existed, or whose
+  // room stamp failed at creation, are stamped lazily here, so a
+  // retry or a reconciliation rescue writes an event WITH the
+  // link. A stamp failure never sinks the calendar write: the
+  // event falls back to the plain 'Virtual' location, honestly.
+  if (!booking.roomId) {
+    try {
+      await ensureBookingRoom(booking, type);
+    } catch (error) {
+      logger.error('lazy room stamp failed before calendar write', {
+        bookingId: String(booking._id),
+        error: String(error),
+      });
+    }
+  }
+  const joinUrl = guestJoinUrlFor(booking) ?? '';
+
   booking.calendarAttempts = (booking.calendarAttempts ?? 0) + 1;
   booking.lastCalendarAttemptAt = new Date();
   try {
@@ -163,17 +181,22 @@ export async function attemptCalendarWrite(
         description: [
           `${booking.guestName}${booking.guestPhone ? `, ${booking.guestPhone}` : ''}`,
           booking.comments ? `Comments: ${booking.comments}` : '',
+          joinUrl ? `Join: ${joinUrl}` : '',
           `Booked via redMeet (https://meet.redbtn.io/${host.slug}/${type.slug})`,
         ]
           .filter(Boolean)
           .join('\n'),
-        location: 'Virtual',
+        // The join link IS the location now: calendar clients
+        // render it as a clickable link. Only a booking with no
+        // room stamped keeps the old plain 'Virtual'.
+        location: joinUrl || 'Virtual',
         startMs: booking.start.getTime(),
         endMs: booking.end.getTime(),
         guestName: booking.guestName,
         guestEmail: booking.guestEmail,
         guestPhone: booking.guestPhone ?? '',
         comments: booking.comments ?? '',
+        joinUrl,
       },
     );
     booking.status = 'confirmed';
@@ -409,6 +432,10 @@ export function bookingJson(booking: MeetBookingDoc, type?: MeetTypeDoc) {
     roomStatus: booking.roomStatus ?? 'not_created',
     roomProvider: booking.roomProvider ?? 'livekit',
     guestJoinToken: booking.guestJoinToken ?? null,
+    // The guest's full join link (Epic 2), for the confirmation
+    // page and the host's share action. Null until the room is
+    // stamped.
+    guestJoinUrl: guestJoinUrlFor(booking),
     roomOpensAt: roomOpensAt(booking).toISOString(),
     roomExpiresAt: booking.roomExpiresAt ? booking.roomExpiresAt.toISOString() : null,
     roomExtended: booking.roomExtended ?? false,

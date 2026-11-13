@@ -132,6 +132,22 @@ export function roomUrlFor(bookingId: string): string {
 }
 
 /**
+ * The guest's full join LINK (Epic 2): the room URL carrying the
+ * guest join token, the one credential a guest has. This is what
+ * goes in the calendar event and on the confirmation page. Null
+ * when the booking has no room stamped yet (the caller stamps
+ * lazily, or falls back honestly when it cannot). The HOST join
+ * token never appears in any link: the host's path is their
+ * session, and this helper only ever reads `guestJoinToken`.
+ */
+export function guestJoinUrlFor(
+  booking: Pick<MeetBookingDoc, 'roomUrl' | 'guestJoinToken'>,
+): string | null {
+  if (!booking.roomUrl || !booking.guestJoinToken) return null;
+  return `${booking.roomUrl}?t=${encodeURIComponent(booking.guestJoinToken)}`;
+}
+
+/**
  * Stamp the room fields on a booking that does not have them yet
  * and create the LiveKit room. Idempotent: a booking that already
  * carries a roomId is returned untouched, so the token endpoints

@@ -37,7 +37,8 @@ export async function GET(
 ): Promise<NextResponse> {
   const { id } = await params;
   if (!OBJECT_ID_RE.test(id)) return notFound('No such booking');
-  const presented = new URL(request.url).searchParams.get('t');
+  const search = new URL(request.url).searchParams;
+  const presented = search.get('t');
   await getDb();
   const booking = await MeetBooking.findById(id);
   if (!booking) return notFound('No such booking');
@@ -48,11 +49,16 @@ export async function GET(
     );
   }
   const type = await MeetType.findById(booking.meetTypeId);
+  // The name the guest typed in the lobby (Epic 2, story 2.1.3)
+  // is the name they appear under. It is theirs to set: the join
+  // token already proved they hold the invite. The booked name
+  // stays the fallback.
+  const typedName = search.get('name')?.trim().slice(0, 120);
 
   try {
     await ensureBookingRoom(booking, type ?? undefined);
     const minted = await mintRoomTokenForBooking(booking, 'guest', {
-      displayName: booking.guestName,
+      displayName: typedName || booking.guestName,
     });
     return NextResponse.json({
       token: minted.token,

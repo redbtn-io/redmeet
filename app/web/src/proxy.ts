@@ -63,6 +63,25 @@ function mintNonce(): string {
   return Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString('base64');
 }
 
+/**
+ * The LiveKit origins the browser must be allowed to reach from
+ * the join page (Epic 2): the signaling WebSocket (wss) and the
+ * HTTP endpoint on the same host. Read from the same LIVEKIT_URL
+ * the server mints against, so the policy and the tokens can
+ * never point at different servers. Absent config means no extra
+ * origins: the room features fail closed server side anyway.
+ */
+function liveKitConnectSrc(): string[] {
+  const raw = (process.env.LIVEKIT_URL ?? '').trim();
+  if (!raw) return [];
+  try {
+    const url = new URL(raw);
+    return [url.origin, `wss://${url.host}`];
+  } catch {
+    return [];
+  }
+}
+
 function contentSecurityPolicy(_nonce: string): string {
   // Next.js App Router emits inline <script> tags for the RSC payload
   // (self.__next_f.push) WITHOUT nonces — a nonce in script-src makes
@@ -74,7 +93,7 @@ function contentSecurityPolicy(_nonce: string): string {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",
-    "connect-src 'self'",
+    `connect-src 'self' ${liveKitConnectSrc().join(' ')}`.trim(),
     "object-src 'none'",
     "frame-ancestors 'none'",
     "base-uri 'self'",
