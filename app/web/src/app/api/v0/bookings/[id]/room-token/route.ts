@@ -41,11 +41,22 @@ export async function POST(
   const booking = await MeetBooking.findOne({ _id: id, hostId: host._id });
   if (!booking) return notFound('No such booking');
   const type = await MeetType.findById(booking.meetTypeId);
+  // The name typed in the lobby (Epic 2) wins over the profile
+  // display name; a host may want to appear as something more
+  // specific for one meeting. The body is optional and untrusted
+  // input, so it is shape-checked, never assumed.
+  let typedName = '';
+  try {
+    const body = (await request.json()) as { displayName?: unknown };
+    if (typeof body?.displayName === 'string') typedName = body.displayName.trim().slice(0, 120);
+  } catch {
+    // No body, or not JSON: the profile name is the fallback.
+  }
 
   try {
     await ensureBookingRoom(booking, type ?? undefined);
     const minted = await mintRoomTokenForBooking(booking, 'host', {
-      displayName: host.displayName,
+      displayName: typedName || host.displayName,
     });
     return NextResponse.json({
       token: minted.token,

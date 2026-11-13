@@ -5,8 +5,11 @@ import type { CSSProperties } from 'react';
 
 import { lightenColor } from '@redmeet/core';
 
+import { CopyButton } from '@/components/CopyButton';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { getDb } from '@/lib/db';
+import { logger } from '@/lib/log';
+import { ensureBookingRoom, guestJoinUrlFor, roomOpensAt } from '@/lib/rooms';
 import { MeetBooking } from '@/models/meet-booking';
 import { MeetHost } from '@/models/meet-host';
 import { MeetType } from '@/models/meet-type';
@@ -42,7 +45,30 @@ export default async function BookedPage({
   const type = await MeetType.findById(booking.meetTypeId);
   if (!host || !type) notFound();
 
+  // The join link (Epic 2, story 2.3.4). Bookings made before
+  // rooms existed are stamped lazily here, so this page is where
+  // their link first appears; a stamp failure leaves the honest
+  // fallback line below instead of an error.
+  if (booking.status !== 'cancelled' && !booking.roomId) {
+    try {
+      await ensureBookingRoom(booking, type);
+    } catch (error) {
+      logger.error('lazy room stamp failed on confirmation page', {
+        bookingId: String(booking._id),
+        error: String(error),
+      });
+    }
+  }
+  const joinUrl = booking.status === 'cancelled' ? null : guestJoinUrlFor(booking);
+
   const tz = host.timeZone;
+  const opensLabel = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    weekday: 'long',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  }).format(roomOpensAt(booking));
   const dateLabel = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
     weekday: 'long',
@@ -123,11 +149,30 @@ export default async function BookedPage({
             </div>
           </dl>
 
-          {booking.status !== 'cancelled' && (
-            <div className="mt-6 rounded-xl border border-border p-4 text-sm text-text-secondary">
-              Your meeting link will appear here once the room opens.
-            </div>
-          )}
+          {booking.status !== 'cancelled' &&
+            (joinUrl ? (
+              <div className="mt-6 rounded-xl border border-border p-4">
+                <p className="text-sm font-medium">Your meeting link</p>
+                <p className="mt-1 text-sm text-text-secondary">
+                  Join from this link when it is time. The room opens at {opensLabel}. Keep
+                  this link to yourself, it is your personal way in, and it works again if
+                  you get dropped.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <a
+                    href={joinUrl}
+                    className="break-all font-mono text-sm text-text-primary underline underline-offset-4"
+                  >
+                    {joinUrl}
+                  </a>
+                  <CopyButton text={joinUrl} />
+                </div>
+              </div>
+            ) : (
+              <div className="mt-6 rounded-xl border border-border p-4 text-sm text-text-secondary">
+                Your meeting link will appear here once the room opens.
+              </div>
+            ))}
 
           <div className="mt-8">
             <Link

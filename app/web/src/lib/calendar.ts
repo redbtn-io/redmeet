@@ -73,6 +73,13 @@ export interface CalendarEventInput {
   guestEmail: string;
   guestPhone: string;
   comments: string;
+  /**
+   * The guest's join link for the meeting room (Epic 2), stored
+   * on the event's private extended properties so the app can
+   * recover the link from the event itself. Empty when the
+   * booking has no room stamped.
+   */
+  joinUrl: string;
 }
 
 /**
@@ -109,6 +116,7 @@ export async function createCalendarEvent(
           phone: input.guestPhone,
           comments: input.comments,
           bookedVia: 'redmeet',
+          joinUrl: input.joinUrl,
         },
       },
     },

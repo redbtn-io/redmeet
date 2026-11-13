@@ -30,6 +30,7 @@ describe.skipIf(!TEST_URI)('calendar write, retry, reconcile, cancel', () => {
   let server: Server;
   let insertFails = false;
   let insertCount = 0;
+  const insertArgs: Array<Record<string, unknown>> = [];
   const deletedEvents: Array<{ calendarId: string; eventId: string }> = [];
 
   function startStubGateway(): Promise<string> {
@@ -73,6 +74,7 @@ describe.skipIf(!TEST_URI)('calendar write, retry, reconcile, cancel', () => {
           if (tool === 'gcal_freebusy_query') return reply({ calendars: {} });
           if (tool === 'gcal_events_insert') {
             insertCount += 1;
+            insertArgs.push((msg.params?.arguments ?? {}) as Record<string, unknown>);
             if (insertFails) return reply({ message: 'stub insert failure' }, true);
             return reply({ id: `evt-${insertCount}` });
           }
@@ -99,8 +101,14 @@ describe.skipIf(!TEST_URI)('calendar write, retry, reconcile, cancel', () => {
   beforeAll(async () => {
     process.env.MONGODB_URI = TEST_URI!;
     process.env.REDMEET_ENCRYPTION_KEY = 'ab'.repeat(32);
+    // Vitest defines BASE_URL as "/" (the Vite built-in), which
+    // would make room URLs relative. Pin the origin the calendar
+    // payload assertions expect.
+    process.env.BASE_URL = 'https://meet.redbtn.io';
     const gatewayUrl = await startStubGateway();
     process.env.MCP_GATEWAY_URL = gatewayUrl;
+    const { resetConfig } = await import('@/lib/config');
+    resetConfig();
 
     mongoose = (await import('mongoose')).default;
     await mongoose.connect(TEST_URI!);
@@ -169,6 +177,31 @@ describe.skipIf(!TEST_URI)('calendar write, retry, reconcile, cancel', () => {
     expect(booking.status).toBe('confirmed');
     expect(booking.calendarEventId).toMatch(/^evt-/);
     expect(booking.calendarAttempts).toBe(1);
+  }, 30000);
+
+  it('carries the guest join link in the calendar event (Epic 2, feature 2.3)', async () => {
+    insertFails = false;
+    const label = await firstFreeLabel();
+    const booking = await bookings.createBooking(host, type, inputFor(label, 'Linked Guest'));
+    expect(booking.status).toBe('confirmed');
+    expect(booking.guestJoinToken).toBeTruthy();
+
+    // BASE_URL is pinned to the production origin in beforeAll.
+    const expected = `https://meet.redbtn.io/join/${String(booking._id)}?t=${booking.guestJoinToken}`;
+    const args = insertArgs[insertArgs.length - 1]!;
+    // Location is the link itself, not the old hardcoded 'Virtual'.
+    expect(args.location).toBe(expected);
+    // The description carries a Join line, so the link survives
+    // in the invite email body even if a client hides location.
+    expect(String(args.description)).toContain(`Join: ${expected}`);
+    // And the link is stored on the event's private properties.
+    const priv = (
+      args.extendedProperties as { private: Record<string, string> }
+    ).private;
+    expect(priv.joinUrl).toBe(expected);
+    expect(priv.bookedVia).toBe('redmeet');
+    // The HOST join token never reaches the calendar payload.
+    expect(JSON.stringify(args)).not.toContain(booking.hostJoinToken);
   }, 30000);
 
   it('holds the slot on failure and lands the invite on manual retry', async () => {
