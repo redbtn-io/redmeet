@@ -21,6 +21,15 @@ import { model, models, Schema, Types, type Model } from 'mongoose';
  */
 export type BookingStatus = 'pending_calendar' | 'confirmed' | 'calendar_failed' | 'cancelled';
 
+/**
+ * Room lifecycle (Epic 1). `not_created` is stamped with the room
+ * fields at booking time (the room record exists from the start, so
+ * the join link is stable); `live` once the room is inside its open
+ * window and a token has been minted; `closed` after expiry, host
+ * end, or cancellation.
+ */
+export type RoomStatus = 'not_created' | 'live' | 'closed';
+
 /** Statuses that hold their slot against new bookings. */
 export const SLOT_HOLDING_STATUSES: BookingStatus[] = [
   'pending_calendar',
@@ -50,6 +59,30 @@ export interface MeetBookingDoc {
   lastCalendarAttemptAt?: Date;
   /** Random token written by the atomic slot claim; see lib/bookings.ts. */
   claimToken?: string;
+  /**
+   * Video room fields (Epic 1), stamped at booking time by
+   * lib/rooms.ts. The room belongs to the booking, one room per
+   * booking, never shared. The join tokens are random per booking;
+   * the Mongo _id is NEVER used as a token (it is already returned
+   * in booking responses and is guessable in structure).
+   */
+  /** LiveKit room name, unique per booking. */
+  roomId?: string;
+  /** The guest-facing join URL for this booking's room. */
+  roomUrl?: string;
+  /** Secret in the guest's join link; checked before a guest token is minted. */
+  guestJoinToken?: string;
+  /** Secret for the host's link-based join path (Epic 2). The dashboard path in this epic is the session. */
+  hostJoinToken?: string;
+  /** Room backend for this booking, copied from the meeting type. */
+  roomProvider: string;
+  roomStatus: RoomStatus;
+  /** When the room fields were stamped (booking time). */
+  roomCreatedAt?: Date;
+  /** When the room stops accepting joins; end + 15 minutes, plus one optional 30 minute host extension. */
+  roomExpiresAt?: Date;
+  /** True once the host has used their one room extension. */
+  roomExtended: boolean;
   /** When the host cancelled the booking. */
   cancelledAt?: Date;
   createdAt: Date;
@@ -78,6 +111,20 @@ const meetBookingSchema = new Schema<MeetBookingDoc>(
     calendarAttempts: { type: Number, default: 0 },
     lastCalendarAttemptAt: Date,
     claimToken: String,
+    roomId: { type: String, index: true },
+    roomUrl: String,
+    guestJoinToken: String,
+    hostJoinToken: String,
+    roomProvider: { type: String, default: 'livekit' },
+    roomStatus: {
+      type: String,
+      enum: ['not_created', 'live', 'closed'],
+      required: true,
+      default: 'not_created',
+    },
+    roomCreatedAt: Date,
+    roomExpiresAt: Date,
+    roomExtended: { type: Boolean, default: false },
     cancelledAt: Date,
   },
   { timestamps: true },

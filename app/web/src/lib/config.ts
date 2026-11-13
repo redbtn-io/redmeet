@@ -33,6 +33,19 @@ export interface Config {
   encryptionKeys: Array<string | null>;
   /** The redbtn hub API, for the PAT whoami probe (/api/auth/me). */
   redbtnApiUrl: string;
+  /**
+   * LiveKit (Epic 1), the fleet's self-hosted server. The same three
+   * vars, with the same meaning, as the Hub's voice rooms use on the
+   * redbtn-app workspace; redMeet holds the same `redbtn-app` key
+   * pair. `livekitUrl` is the PUBLIC endpoint: it is handed to
+   * browsers in token responses and used server side for the room
+   * service API. All three are null until configured, and the room
+   * features fail closed (503) in that state, never minting against
+   * a guessed endpoint. Never logged.
+   */
+  livekitUrl: string | null;
+  livekitApiKey: string | null;
+  livekitApiSecret: string | null;
 }
 
 let cached: Config | null = null;
@@ -57,6 +70,9 @@ export function getConfig(): Config {
       mcpPat: envOrNull('REDMEET_MCP_PAT'),
       encryptionKeys: [envOrNull('REDMEET_ENCRYPTION_KEY'), envOrNull('REDMEET_ENCRYPTION_KEY_PREVIOUS')],
       redbtnApiUrl: (process.env.REDBTN_API_URL ?? 'https://app.redbtn.io').replace(/\/+$/, ''),
+      livekitUrl: envOrNull('LIVEKIT_URL')?.replace(/\/+$/, '') ?? null,
+      livekitApiKey: envOrNull('LIVEKIT_API_KEY'),
+      livekitApiSecret: envOrNull('LIVEKIT_API_SECRET'),
     };
   }
   return cached;
@@ -65,4 +81,21 @@ export function getConfig(): Config {
 /** Test seam. */
 export function resetConfig(): void {
   cached = null;
+}
+
+export interface LiveKitConfig {
+  url: string;
+  apiKey: string;
+  apiSecret: string;
+}
+
+/**
+ * The LiveKit config, or null when any of the three vars is missing.
+ * One place decides "are rooms configured", so the token endpoints,
+ * the room service, and the health check all agree.
+ */
+export function getLiveKitConfig(): LiveKitConfig | null {
+  const { livekitUrl, livekitApiKey, livekitApiSecret } = getConfig();
+  if (!livekitUrl || !livekitApiKey || !livekitApiSecret) return null;
+  return { url: livekitUrl, apiKey: livekitApiKey, apiSecret: livekitApiSecret };
 }

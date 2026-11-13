@@ -16,6 +16,13 @@ export interface MeetTypeDoc {
   lengthMinutes: number;
   active: boolean;
   sort: number;
+  /**
+   * Room backend for bookings of this type (Epic 1). Only 'livekit'
+   * exists today; the field is per type so an intro call and a paid
+   * consult can use different room settings later. Bookings copy it
+   * at booking time.
+   */
+  roomProvider: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,6 +36,7 @@ const meetTypeSchema = new Schema<MeetTypeDoc>(
     lengthMinutes: { type: Number, required: true, default: 30 },
     active: { type: Boolean, default: true },
     sort: { type: Number, default: 0 },
+    roomProvider: { type: String, default: 'livekit' },
   },
   { timestamps: true },
 );

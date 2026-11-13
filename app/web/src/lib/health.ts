@@ -2,7 +2,7 @@ import 'server-only';
 
 import mongoose from 'mongoose';
 
-import { getConfig } from '@/lib/config';
+import { getConfig, getLiveKitConfig } from '@/lib/config';
 import { getDb } from '@/lib/db';
 
 /**
@@ -10,7 +10,11 @@ import { getDb } from '@/lib/db';
  * returned a static ok and checked nothing, so a wedged container
  * with a dead database still reported healthy. These checks are the
  * smallest honest set: Mongo (the app's own state) and the MCP
- * gateway (every calendar read and write goes through it).
+ * gateway (every calendar read and write goes through it). Epic 1
+ * adds LiveKit: meetings are the product now, so a dead media
+ * server is a red health check, not a silent surprise at join time
+ * (spec story 5.1.1, pulled forward because the token service
+ * lands in Epic 1).
  */
 
 export interface HealthCheckResult {
@@ -23,6 +27,7 @@ export interface HealthReport {
   checks: {
     mongo: HealthCheckResult;
     gateway: HealthCheckResult;
+    livekit: HealthCheckResult;
   };
 }
 
@@ -69,7 +74,28 @@ export async function checkGateway(): Promise<HealthCheckResult> {
   }
 }
 
+export async function checkLiveKit(): Promise<HealthCheckResult> {
+  const livekit = getLiveKitConfig();
+  if (!livekit) return { ok: false, detail: 'not configured' };
+  try {
+    // The LiveKit server answers GET / with 200 "OK". Any HTTP
+    // answer proves reachability; the token endpoints prove the key
+    // pair the first time they mint.
+    const res = await fetch(livekit.url, {
+      method: 'GET',
+      signal: AbortSignal.timeout(CHECK_TIMEOUT_MS),
+    });
+    return { ok: res.ok, detail: `HTTP ${res.status}` };
+  } catch (error) {
+    return { ok: false, detail: String(error).slice(0, 200) };
+  }
+}
+
 export async function checkHealth(): Promise<HealthReport> {
-  const [mongo, gateway] = await Promise.all([checkMongo(), checkGateway()]);
-  return { ok: mongo.ok && gateway.ok, checks: { mongo, gateway } };
+  const [mongo, gateway, livekit] = await Promise.all([
+    checkMongo(),
+    checkGateway(),
+    checkLiveKit(),
+  ]);
+  return { ok: mongo.ok && gateway.ok && livekit.ok, checks: { mongo, gateway, livekit } };
 }
