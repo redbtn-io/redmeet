@@ -21,6 +21,7 @@ import {
 } from '@/lib/calendar-auth';
 import { getDb } from '@/lib/db';
 import { logger } from '@/lib/log';
+import { deleteLiveKitRoom, ensureBookingRoom, roomOpensAt } from '@/lib/rooms';
 import {
   MeetBooking,
   SLOT_HOLDING_STATUSES,
@@ -267,6 +268,20 @@ export async function createBooking(
     throw new BookingConflictError('That slot was just taken or is no longer available');
   }
 
+  // The room is created at booking time (Epic 1, story 1.3.1), so
+  // the join link is stable from this moment and the calendar event
+  // can carry it later. A room failure never sinks the booking:
+  // the token endpoints stamp lazily for any booking missing its
+  // room, and LiveKit creates the room at first join regardless.
+  try {
+    await ensureBookingRoom(booking, type);
+  } catch (error) {
+    logger.error('room creation failed for booking; it will be stamped lazily', {
+      bookingId: String(booking._id),
+      error: String(error),
+    });
+  }
+
   await attemptCalendarWrite(host, type, booking);
   return booking;
 }
@@ -359,8 +374,13 @@ export async function cancelBooking(
 
   booking.status = 'cancelled';
   booking.cancelledAt = new Date();
+  // The room closes with the booking: the mint gate refuses a
+  // cancelled booking outright, and the LiveKit room is deleted so
+  // nothing lingers joinable on the media server.
+  booking.roomStatus = 'closed';
   if (calendarRemoved !== false) booking.calendarError = undefined;
   await booking.save();
+  await deleteLiveKitRoom(booking.roomId);
   return { booking, calendarRemoved };
 }
 
@@ -379,5 +399,18 @@ export function bookingJson(booking: MeetBookingDoc, type?: MeetTypeDoc) {
     calendarEventId: booking.calendarEventId ?? null,
     calendarError: booking.calendarError ?? null,
     calendarAttempts: booking.calendarAttempts ?? 0,
+    // Room fields (Epic 1). The guest join token is included
+    // because every audience of this JSON already owns it: the
+    // guest who just booked gets their own link back, and the
+    // host's dashboard gets the link they share. The HOST join
+    // token is not here; the host's path is their session.
+    roomId: booking.roomId ?? null,
+    roomUrl: booking.roomUrl ?? null,
+    roomStatus: booking.roomStatus ?? 'not_created',
+    roomProvider: booking.roomProvider ?? 'livekit',
+    guestJoinToken: booking.guestJoinToken ?? null,
+    roomOpensAt: roomOpensAt(booking).toISOString(),
+    roomExpiresAt: booking.roomExpiresAt ? booking.roomExpiresAt.toISOString() : null,
+    roomExtended: booking.roomExtended ?? false,
   };
 }

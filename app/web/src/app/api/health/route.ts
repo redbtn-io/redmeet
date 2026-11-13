@@ -6,8 +6,8 @@ export const dynamic = 'force-dynamic';
 
 /**
  * GET /api/health, a REAL health check (Epic 0). Reports the state of
- * the dependencies the app cannot work without, Mongo and the MCP
- * gateway, and answers 503 when either is down, so a monitor (or a
+ * the dependencies the app cannot work without, Mongo, the MCP
+ * gateway, and LiveKit, and answers 503 when any is down, so a monitor (or a
  * human) can tell a wedged deployment from a healthy one. The old
  * version returned a static ok and checked nothing.
  */

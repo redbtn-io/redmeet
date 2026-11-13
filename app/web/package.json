@@ -4,6 +4,8 @@
     "@redbtn/redlabel": "0.1.0",
     "@redbtn/redstyle": "0.6.2",
     "@redmeet/core": "0.1.0",
+    "livekit-client": "^2.24.0",
+    "livekit-server-sdk": "^2.19.3",
     "lucide-react": "^0.559.0",
     "mongoose": "^9.1.4",
     "next": "16.3.0",
