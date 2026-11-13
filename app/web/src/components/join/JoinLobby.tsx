@@ -1,7 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Room, RoomEvent, Track, type Participant } from 'livekit-client';
+import { Room, RoomEvent } from 'livekit-client';
+
+import {
+  loadDeviceMemory,
+  saveDeviceMemory,
+} from '@/lib/device-memory';
+import { MeetingRoom } from './MeetingRoom';
 
 /**
  * The join flow (Epic 2): lobby, device check, connect, and the
@@ -20,13 +26,14 @@ import { Room, RoomEvent, Track, type Participant } from 'livekit-client';
  * at that mint, and the error codes come back here to be turned
  * into plain words.
  *
- * EPIC 3 REPLACEMENT POINT: what renders after connect is a
- * deliberately MINIMAL room shell: a connected badge, the local
- * preview, who is in the room by name, and a Leave button. No
- * tiles, no grid, no screen share UI, no in room device
- * switching. Epic 3 replaces the shell section below with the
- * real room UI and keeps everything above it (lobby, mint,
- * connect) as is.
+ * What renders after connect is the real room (Epic 3): the
+ * MeetingRoom component owns the grid, the controls, device
+ * switching, screen share, and connection quality while the
+ * participant is in the room. This component keeps owning the
+ * path in and out: the lobby, the mint, the connect, the left
+ * screen, and the failed screen with its retry when a
+ * connection drops for good or the meeting infrastructure
+ * cannot be reached at all.
  */
 
 export interface JoinLobbyProps {
@@ -42,14 +49,8 @@ export interface JoinLobbyProps {
   closesAt: string;
 }
 
-type Screen = 'lobby' | 'connecting' | 'inroom' | 'left' | 'gone';
+type Screen = 'lobby' | 'connecting' | 'inroom' | 'left' | 'gone' | 'failed';
 type PreviewState = 'starting' | 'ready' | 'denied' | 'unavailable';
-
-interface ParticipantRow {
-  identity: string;
-  name: string;
-  isLocal: boolean;
-}
 
 function timeLabel(iso: string): string {
   return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(
@@ -62,8 +63,10 @@ export function JoinLobby(props: JoinLobbyProps) {
 
   const [screen, setScreen] = useState<Screen>('lobby');
   const [goneMessage, setGoneMessage] = useState('');
+  const [failedMessage, setFailedMessage] = useState('');
   const [joinError, setJoinError] = useState<string | null>(null);
   const [name, setName] = useState(props.initialName);
+  const [roomNonce, setRoomNonce] = useState(0);
 
   const [previewState, setPreviewState] = useState<PreviewState>('starting');
   const [camOn, setCamOn] = useState(true);
@@ -77,16 +80,13 @@ export function JoinLobby(props: JoinLobbyProps) {
   const [micLevel, setMicLevel] = useState(0);
   const [previewNonce, setPreviewNonce] = useState(0);
 
-  const [participants, setParticipants] = useState<ParticipantRow[]>([]);
-
   const [, setClockTick] = useState(0);
 
   const previewStreamRef = useRef<MediaStream | null>(null);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const levelAudioRef = useRef<{ ctx: AudioContext; raf: number } | null>(null);
   const roomRef = useRef<Room | null>(null);
-  const shellVideoRef = useRef<HTMLVideoElement | null>(null);
-  const remoteAudioRef = useRef<HTMLDivElement | null>(null);
+  const intentionalLeaveRef = useRef(false);
   const screenRef = useRef<Screen>('lobby');
   screenRef.current = screen;
 
@@ -175,6 +175,30 @@ export function JoinLobby(props: JoinLobbyProps) {
     return () => stopPreview();
   }, [acquirePreview, screen, previewNonce, stopPreview]);
 
+  // Remembered devices (Epic 3, story 3.3.3): the lobby opens
+  // with the mic, camera, and speaker the participant picked
+  // last time, in this browser, and every later pick in the
+  // lobby is written back for the next meeting. The room's own
+  // pickers write to the same record.
+  const applyRememberedDevices = useCallback(() => {
+    const remembered = loadDeviceMemory();
+    if (remembered.micId) setMicId(remembered.micId);
+    if (remembered.camId) setCamId(remembered.camId);
+    if (remembered.speakerId) setSpeakerId(remembered.speakerId);
+  }, []);
+  useEffect(() => {
+    applyRememberedDevices();
+  }, [applyRememberedDevices]);
+
+  const skipFirstSaveRef = useRef(true);
+  useEffect(() => {
+    if (skipFirstSaveRef.current) {
+      skipFirstSaveRef.current = false;
+      return;
+    }
+    saveDeviceMemory({ micId, camId, speakerId });
+  }, [micId, camId, speakerId]);
+
   // A clock for the "room opens at" state on the Join button.
   useEffect(() => {
     if (screen !== 'lobby') return;
@@ -189,36 +213,6 @@ export function JoinLobby(props: JoinLobbyProps) {
       roomRef.current = null;
     };
   }, [stopPreview]);
-
-  const syncParticipants = useCallback(() => {
-    const room = roomRef.current;
-    if (!room) return;
-    const rows: ParticipantRow[] = [
-      {
-        identity: room.localParticipant.identity,
-        name: room.localParticipant.name || 'You',
-        isLocal: true,
-      },
-    ];
-    room.remoteParticipants.forEach((p: Participant) => {
-      rows.push({ identity: p.identity, name: p.name || p.identity, isLocal: false });
-    });
-    setParticipants(rows);
-  }, []);
-
-  // Attach the local camera inside the shell once it renders.
-  useEffect(() => {
-    if (screen !== 'inroom') return;
-    const room = roomRef.current;
-    const video = shellVideoRef.current;
-    if (!room || !video) return;
-    for (const pub of room.localParticipant.videoTrackPublications.values()) {
-      if (pub.track && pub.source === Track.Source.Camera) {
-        pub.track.attach(video);
-        return;
-      }
-    }
-  }, [screen, participants]);
 
   async function mintToken(): Promise<{ token: string; url: string }> {
     if (mode === 'host') {
@@ -261,6 +255,7 @@ export function JoinLobby(props: JoinLobbyProps) {
     const useCam = overrides?.cam ?? camOn;
     const useMic = overrides?.mic ?? micOn;
     setJoinError(null);
+    intentionalLeaveRef.current = false;
     setScreen('connecting');
     try {
       const minted = await mintToken();
@@ -272,22 +267,21 @@ export function JoinLobby(props: JoinLobbyProps) {
         dynacast: true,
       });
       roomRef.current = room;
-      room.on(RoomEvent.ParticipantConnected, syncParticipants);
-      room.on(RoomEvent.ParticipantDisconnected, syncParticipants);
-      room.on(RoomEvent.TrackSubscribed, (track) => {
-        if (track.kind === Track.Kind.Audio && remoteAudioRef.current) {
-          remoteAudioRef.current.appendChild(track.attach());
-        }
-        syncParticipants();
-      });
-      room.on(RoomEvent.TrackUnsubscribed, (track) => {
-        track.detach().forEach((el) => el.remove());
-      });
+      // The room component owns every in room event. The one
+      // event owned here is the final disconnect: LiveKit
+      // reconnects on its own through transient drops, so a
+      // Disconnected that reaches this handler means it gave
+      // up, and the failed screen takes over with its retry.
+      // A disconnect we asked for (Leave) is not a failure.
       room.on(RoomEvent.Disconnected, () => {
+        if (roomRef.current !== room) return;
         roomRef.current = null;
-        setParticipants([]);
+        if (intentionalLeaveRef.current) return;
         if (screenRef.current === 'inroom' || screenRef.current === 'connecting') {
-          setScreen('left');
+          setFailedMessage(
+            'The connection to the meeting dropped and could not be restored.',
+          );
+          setScreen('failed');
         }
       });
       await room.connect(minted.url, minted.token);
@@ -301,7 +295,7 @@ export function JoinLobby(props: JoinLobbyProps) {
       }
       if (useMic) await room.localParticipant.setMicrophoneEnabled(true);
       if (useCam) await room.localParticipant.setCameraEnabled(true);
-      syncParticipants();
+      setRoomNonce((n) => n + 1);
       setScreen('inroom');
     } catch (error) {
       const code = (error as { code?: string })?.code ?? '';
@@ -325,17 +319,22 @@ export function JoinLobby(props: JoinLobbyProps) {
         setScreen('lobby');
         setPreviewNonce((n) => n + 1);
       } else {
-        setJoinError('Could not connect to the meeting. Check your connection and try again.');
-        setScreen('lobby');
-        setPreviewNonce((n) => n + 1);
+        // The mint answered but the connect itself failed:
+        // the meeting infrastructure could not be reached.
+        // Plain words and a retry, the redChat voice style
+        // (story 3.5.4).
+        setFailedMessage(
+          'Meeting infrastructure is unreachable right now. Check your connection, then try again.',
+        );
+        setScreen('failed');
       }
     }
   }
 
   async function leave() {
+    intentionalLeaveRef.current = true;
     await roomRef.current?.disconnect().catch(() => undefined);
     roomRef.current = null;
-    setParticipants([]);
     setScreen('left');
   }
 
@@ -366,6 +365,10 @@ export function JoinLobby(props: JoinLobbyProps) {
           type="button"
           data-testid="rejoin-button"
           onClick={() => {
+            // The room may have saved new device picks while
+            // this component stayed mounted; the lobby must
+            // open with them, not with its own older state.
+            applyRememberedDevices();
             setScreen('lobby');
             setPreviewNonce((n) => n + 1);
           }}
@@ -377,56 +380,57 @@ export function JoinLobby(props: JoinLobbyProps) {
     );
   }
 
-  if (screen === 'inroom' || screen === 'connecting') {
+  if (screen === 'failed') {
     return (
-      <div className="rounded-2xl border border-border bg-bg-secondary p-8" data-testid="room-shell">
-        {/* EPIC 3 REPLACEMENT POINT: this minimal shell (connected
-            badge, local preview, names, Leave) is replaced by the
-            real room UI in Epic 3. The lobby and connect path that
-            got us here stay. */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-2xl font-semibold">{props.meetingName}</h1>
-            <p className="mt-1 text-sm text-text-secondary">with {props.hostName}</p>
-          </div>
-          <span
-            className="rounded-full bg-black/25 px-3 py-1 text-xs font-medium"
-            data-testid="connected-badge"
+      <div className="rounded-2xl border border-border bg-bg-secondary p-8" data-testid="join-failed">
+        <h1 className="text-2xl font-semibold">{props.meetingName}</h1>
+        <p className="mt-2 text-sm text-text-secondary">{failedMessage}</p>
+        <div className="mt-6 flex flex-wrap gap-2">
+          <button
+            type="button"
+            data-testid="retry-button"
+            onClick={() => void join()}
+            className="rounded-lg bg-[var(--primary-color)] px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
           >
-            {screen === 'connecting' ? 'Connecting...' : 'Connected'}
-          </span>
+            Try again
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              applyRememberedDevices();
+              setScreen('lobby');
+              setPreviewNonce((n) => n + 1);
+            }}
+            className="rounded-lg border border-border px-5 py-2.5 text-sm text-text-secondary transition hover:text-text-primary"
+          >
+            Back to the lobby
+          </button>
         </div>
-
-        <video
-          ref={shellVideoRef}
-          autoPlay
-          playsInline
-          muted
-          data-testid="shell-local-video"
-          className="mt-6 aspect-video w-full max-w-md rounded-xl bg-black object-cover"
-        />
-
-        <h2 className="mt-6 text-sm font-medium">In this meeting</h2>
-        <ul className="mt-2 space-y-1 text-sm text-text-secondary" data-testid="participant-list">
-          {participants.map((p) => (
-            <li key={p.identity}>
-              {p.name}
-              {p.isLocal ? ' (you)' : ''}
-            </li>
-          ))}
-        </ul>
-
-        <div ref={remoteAudioRef} className="hidden" aria-hidden />
-
-        <button
-          type="button"
-          data-testid="leave-button"
-          onClick={() => void leave()}
-          className="mt-8 rounded-lg bg-red-600 px-5 py-2.5 text-sm font-medium text-white transition hover:bg-red-500"
-        >
-          Leave
-        </button>
       </div>
+    );
+  }
+
+  if (screen === 'connecting') {
+    return (
+      <div className="rounded-2xl border border-border bg-bg-secondary p-8" data-testid="room-connecting">
+        <h1 className="text-2xl font-semibold">{props.meetingName}</h1>
+        <p className="mt-2 text-sm text-text-secondary" role="status">
+          Connecting to the meeting...
+        </p>
+      </div>
+    );
+  }
+
+  if (screen === 'inroom' && roomRef.current) {
+    return (
+      <MeetingRoom
+        key={roomNonce}
+        room={roomRef.current}
+        meetingName={props.meetingName}
+        hostName={props.hostName}
+        initialDevices={{ micId, camId, speakerId }}
+        onLeave={() => void leave()}
+      />
     );
   }
 
