@@ -6,6 +6,9 @@ import { model, models, Schema, Types, type Model } from 'mongoose';
  * app's `userDetails.meetings[]` entries (`name`, `description`, `link`,
  * `length`). The public address is `/<host slug>/<type slug>`.
  */
+/** Entry mode for a meeting type (Epic 4, feature 4.3). */
+export type EntryMode = 'open' | 'waiting_room';
+
 export interface MeetTypeDoc {
   _id: Types.ObjectId;
   hostId: Types.ObjectId;
@@ -23,6 +26,14 @@ export interface MeetTypeDoc {
    * at booking time.
    */
   roomProvider: string;
+  /**
+   * Entry mode for bookings of this type (Epic 4, feature 4.3):
+   * 'open' lets the guest enter as soon as the room opens,
+   * 'waiting_room' holds them until the host admits them.
+   * Bookings copy it at booking time, so changing it here only
+   * affects future bookings.
+   */
+  entryMode: EntryMode;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -37,6 +48,7 @@ const meetTypeSchema = new Schema<MeetTypeDoc>(
     active: { type: Boolean, default: true },
     sort: { type: Number, default: 0 },
     roomProvider: { type: String, default: 'livekit' },
+    entryMode: { type: String, enum: ['open', 'waiting_room'], default: 'open' },
   },
   { timestamps: true },
 );

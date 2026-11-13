@@ -108,6 +108,7 @@ export function meetingTypeJson(type: MeetTypeDoc) {
     description: type.description,
     lengthMinutes: type.lengthMinutes,
     active: type.active,
+    entryMode: type.entryMode ?? 'open',
   };
 }
 

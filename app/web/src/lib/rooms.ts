@@ -83,6 +83,38 @@ export class RoomWindowError extends Error {
   }
 }
 
+/** The LiveKit identity of this booking's host participant. */
+export function hostIdentityFor(hostId: string): string {
+  return `host-${hostId}`;
+}
+
+/** The LiveKit identity of this booking's guest participant. */
+export function guestIdentityFor(bookingId: string): string {
+  return `guest-${bookingId}`;
+}
+
+export type RoomAccessCode = 'guest_removed' | 'admission_required';
+
+/**
+ * A guest who may not have a token even inside the room window
+ * (Epic 4): they were removed by the host, or the meeting uses
+ * a waiting room and the host has not admitted them yet. Kept
+ * apart from RoomWindowError because these are not about time:
+ * no amount of waiting inside the window fixes them, only the
+ * host (admission) or nobody (removal) can.
+ */
+export class RoomAccessError extends Error {
+  readonly code: RoomAccessCode;
+  constructor(code: RoomAccessCode) {
+    super(
+      code === 'guest_removed'
+        ? 'You were removed from this meeting'
+        : 'The host has not let you in yet',
+    );
+    this.code = code;
+  }
+}
+
 export class RoomExtendError extends Error {
   readonly code: 'already_extended' | 'booking_cancelled' | 'room_closed';
   constructor(code: RoomExtendError['code'], message: string) {
@@ -164,6 +196,11 @@ export async function ensureBookingRoom(
 ): Promise<void> {
   if (booking.roomId) return;
   const bookingId = String(booking._id);
+  // The entry mode is carried from the meeting type at stamp
+  // time (Epic 4, feature 4.3), the same moment the room fields
+  // land, so a booking keeps the mode its type had when it was
+  // booked even if the host changes the type later.
+  booking.entryMode = type?.entryMode ?? booking.entryMode ?? 'open';
   booking.roomId = roomNameFor(bookingId);
   booking.roomUrl = roomUrlFor(bookingId);
   booking.guestJoinToken = randomUUID();
@@ -261,6 +298,26 @@ export async function mintRoomTokenForBooking(
     );
   }
 
+  // Epic 4 guest gates, checked after the window so the answer
+  // order stays time first, access second. A removed guest is
+  // refused for good: their identity is on the booking's
+  // removed list, which is the record that tells them apart
+  // from a guest who merely dropped (a drop leaves no record
+  // and mints again with the same link). A waiting room guest
+  // is refused until the host admits them, so no publishing
+  // token exists before admission, ever.
+  if (role === 'guest') {
+    if ((booking.removedIdentities ?? []).includes(guestIdentityFor(String(booking._id)))) {
+      throw new RoomAccessError('guest_removed');
+    }
+    if (
+      booking.entryMode === 'waiting_room' &&
+      booking.guestAdmissionState !== 'admitted'
+    ) {
+      throw new RoomAccessError('admission_required');
+    }
+  }
+
   const ttlSeconds = Math.min(
     TOKEN_MAX_TTL_SECONDS,
     Math.max(
@@ -269,7 +326,9 @@ export async function mintRoomTokenForBooking(
     ),
   );
   const identity =
-    role === 'host' ? `host-${String(booking.hostId)}` : `guest-${String(booking._id)}`;
+    role === 'host'
+      ? hostIdentityFor(String(booking.hostId))
+      : guestIdentityFor(String(booking._id));
   const minted = await mintRoomToken(config, {
     room: booking.roomId,
     identity,

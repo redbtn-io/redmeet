@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { notFound } from '@/lib/api-gate';
 import { getDb } from '@/lib/db';
-import { roomClosesAt, roomOpensAt, roomPhase } from '@/lib/rooms';
+import { guestIdentityFor, roomClosesAt, roomOpensAt, roomPhase } from '@/lib/rooms';
 import { secretEquals } from '@/lib/session';
 import { MeetBooking } from '@/models/meet-booking';
 import { MeetHost } from '@/models/meet-host';
@@ -58,5 +58,13 @@ export async function GET(
     opensAt: roomOpensAt(booking).toISOString(),
     closesAt: roomClosesAt(booking).toISOString(),
     status: booking.status,
+    // Epic 4: the waiting room state the lobby polls while it
+    // waits for the host's decision, and whether THIS guest
+    // was removed (their identity is per booking, so the flag
+    // is exact). Removed and ended are how a disconnected
+    // guest's client tells what actually happened to them.
+    entryMode: booking.entryMode ?? 'open',
+    admissionState: booking.guestAdmissionState ?? 'none',
+    removed: (booking.removedIdentities ?? []).includes(guestIdentityFor(id)),
   });
 }

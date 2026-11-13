@@ -274,6 +274,7 @@ export async function createBooking(
           start: new Date(slot.startMs),
           end: new Date(slot.endMs),
           status: 'pending_calendar',
+          entryMode: type.entryMode ?? 'open',
           claimToken,
           calendarAttempts: 0,
         },
@@ -427,6 +428,7 @@ export function bookingJson(booking: MeetBookingDoc, type?: MeetTypeDoc) {
     // guest who just booked gets their own link back, and the
     // host's dashboard gets the link they share. The HOST join
     // token is not here; the host's path is their session.
+    entryMode: booking.entryMode ?? 'open',
     roomId: booking.roomId ?? null,
     roomUrl: booking.roomUrl ?? null,
     roomStatus: booking.roomStatus ?? 'not_created',
