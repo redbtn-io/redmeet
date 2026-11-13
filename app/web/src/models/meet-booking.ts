@@ -1,6 +1,8 @@
 import 'server-only';
 import { model, models, Schema, Types, type Model } from 'mongoose';
 
+import type { EntryMode } from '@/models/meet-type';
+
 /**
  * MeetBooking, one guest's booking through a public link.
  *
@@ -29,6 +31,13 @@ export type BookingStatus = 'pending_calendar' | 'confirmed' | 'calendar_failed'
  * end, or cancellation.
  */
 export type RoomStatus = 'not_created' | 'live' | 'closed';
+
+/**
+ * Waiting room admission (Epic 4, feature 4.3). `none` is a
+ * guest who has not asked yet; `waiting` is an ask the host has
+ * not decided; `admitted` and `denied` are the host's decisions.
+ */
+export type GuestAdmissionState = 'none' | 'waiting' | 'admitted' | 'denied';
 
 /** Statuses that hold their slot against new bookings. */
 export const SLOT_HOLDING_STATUSES: BookingStatus[] = [
@@ -83,6 +92,30 @@ export interface MeetBookingDoc {
   roomExpiresAt?: Date;
   /** True once the host has used their one room extension. */
   roomExtended: boolean;
+  /** Entry mode copied from the meeting type at booking time (Epic 4, feature 4.3). */
+  entryMode: EntryMode;
+  /**
+   * Waiting room admission for this booking's guest (Epic 4,
+   * feature 4.3). Only meaningful when entryMode is
+   * 'waiting_room'. The guest mint refuses until the state is
+   * 'admitted', so no publishing token exists before admission.
+   */
+  guestAdmissionState: GuestAdmissionState;
+  /** The name the guest asked to join under (their lobby name). */
+  guestAdmissionName: string;
+  guestAdmissionRequestedAt?: Date;
+  guestAdmissionDecidedAt?: Date;
+  /**
+   * LiveKit identities the host removed from this booking's
+   * room (Epic 4, feature 4.2). The mint checks this list,
+   * which is what tells a REMOVED guest apart from a DROPPED
+   * one: a drop leaves no record and the same link mints
+   * again; a removal is recorded here and the same link is
+   * refused for good.
+   */
+  removedIdentities: string[];
+  /** When the host ended the meeting (Epic 4, feature 4.2). */
+  roomEndedAt?: Date;
   /** When the host cancelled the booking. */
   cancelledAt?: Date;
   createdAt: Date;
@@ -125,6 +158,17 @@ const meetBookingSchema = new Schema<MeetBookingDoc>(
     roomCreatedAt: Date,
     roomExpiresAt: Date,
     roomExtended: { type: Boolean, default: false },
+    entryMode: { type: String, enum: ['open', 'waiting_room'], default: 'open' },
+    guestAdmissionState: {
+      type: String,
+      enum: ['none', 'waiting', 'admitted', 'denied'],
+      default: 'none',
+    },
+    guestAdmissionName: { type: String, default: '' },
+    guestAdmissionRequestedAt: Date,
+    guestAdmissionDecidedAt: Date,
+    removedIdentities: { type: [String], default: [] },
+    roomEndedAt: Date,
     cancelledAt: Date,
   },
   { timestamps: true },

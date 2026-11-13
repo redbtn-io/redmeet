@@ -16,6 +16,7 @@ import {
   MonitorX,
   PhoneOff,
   Settings2,
+  Users,
   Video,
   VideoOff,
 } from 'lucide-react';
@@ -53,14 +54,36 @@ import { ParticipantTile, type TileView } from './ParticipantTile';
  *   banner here; if it gives up entirely, JoinLobby hears
  *   the final Disconnected and offers the failed screen
  *   with a retry.
+ *
+ * Host controls (Epic 4, features 4.1 to 4.3): the People
+ * panel lists every participant with their role (host or
+ * guest, from the identity prefix) and their mic and camera
+ * state. The host's buttons in it, and the Mute all and End
+ * meeting buttons beside Leave, call the host gated moderate
+ * endpoint, which performs the LiveKit server API action;
+ * nothing in this component enforces anything by itself, it
+ * only asks. A guest the host muted sees a notice with their
+ * own way back in, because a server side mute leaves the
+ * normal publish path open, so unmuting republishes. The
+ * host also gets the waiting room panel here: when a guest
+ * asks to join a waiting room meeting, their name appears
+ * with Admit and Deny, polled from the host gated waiting
+ * endpoint. Mute all and End meeting both take a confirm
+ * step before anything is sent.
  */
 
 export interface MeetingRoomProps {
   room: Room;
+  /** The booking this room belongs to (Epic 4 moderation endpoints). */
+  bookingId: string;
+  /** True when the local participant is the booking's host. */
+  isHost: boolean;
   meetingName: string;
   hostName: string;
   initialDevices: DeviceMemory;
   onLeave: () => void;
+  /** The host ended the meeting; JoinLobby owns the ended screen. */
+  onEnded: () => void;
 }
 
 interface ShareView extends ShareRef {
@@ -138,6 +161,13 @@ export function MeetingRoom(props: MeetingRoomProps) {
   const [camPausedNotice, setCamPausedNotice] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [devicesOpen, setDevicesOpen] = useState(false);
+  // Epic 4 host controls.
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [hostMuted, setHostMuted] = useState(false);
+  const [confirmMuteAll, setConfirmMuteAll] = useState(false);
+  const [confirmEnd, setConfirmEnd] = useState(false);
+  const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
+  const [waitingGuest, setWaitingGuest] = useState<{ name: string } | null>(null);
   const [deviceLists, setDeviceLists] = useState<DeviceLists>({
     mics: [],
     cams: [],
@@ -156,6 +186,14 @@ export function MeetingRoom(props: MeetingRoomProps) {
   const activeIdsRef = useRef<DeviceMemory>(props.initialDevices);
   const toastCounterRef = useRef(0);
   const prevDisplayedSidRef = useRef<string | null>(null);
+  // The participant's own microphone intent (Epic 4): the
+  // last state THEY asked for. LiveKit reports a server side
+  // host mute exactly like a self mute (the local publication
+  // is muted and isMicrophoneEnabled reads false), so the
+  // only honest way to tell "the host muted you" from "you
+  // muted yourself" is whose intent changed last. It starts
+  // from the state the room was entered with.
+  const micIntentRef = useRef(room.localParticipant.isMicrophoneEnabled);
 
   const pushToast = useCallback((text: string) => {
     const id = ++toastCounterRef.current;
@@ -212,6 +250,17 @@ export function MeetingRoom(props: MeetingRoomProps) {
     setMicEnabled(room.localParticipant.isMicrophoneEnabled);
     setCamEnabled(room.localParticipant.isCameraEnabled);
     setLocalSharing(room.localParticipant.isScreenShareEnabled);
+    // Host mute detection (Epic 4): the local microphone
+    // publication is muted while the participant's own intent
+    // is still live. A self mute sets the intent off in
+    // toggleMic before it mutes, so it never trips this.
+    let localMicMuted = false;
+    room.localParticipant.audioTrackPublications.forEach((pub) => {
+      if (pub.source === Track.Source.Microphone) {
+        localMicMuted = pub.isMuted;
+      }
+    });
+    setHostMuted(micIntentRef.current && localMicMuted);
 
     // Shares: stamp arrival order the first time a share is
     // seen, forget it when it ends. The displayed share is
@@ -475,8 +524,10 @@ export function MeetingRoom(props: MeetingRoomProps) {
   }, [displayedShare, shares, room, pushToast]);
 
   async function toggleMic() {
+    const target = !micEnabled;
+    micIntentRef.current = target;
     try {
-      await room.localParticipant.setMicrophoneEnabled(!micEnabled);
+      await room.localParticipant.setMicrophoneEnabled(target);
     } catch {
       pushToast(
         'Could not change your microphone. Check that the browser still has permission to use it.',
@@ -484,6 +535,110 @@ export function MeetingRoom(props: MeetingRoomProps) {
     }
     sync();
   }
+
+  /**
+   * Back in after a host mute (Epic 4): the track was never
+   * unpublished, only muted on the server, so the normal
+   * publish path unmutes it.
+   */
+  async function unmuteAfterHostMute() {
+    micIntentRef.current = true;
+    try {
+      await room.localParticipant.setMicrophoneEnabled(true);
+      pushToast('You are unmuted');
+    } catch {
+      pushToast(
+        'Could not unmute you. Check that the browser still has permission to use your microphone.',
+      );
+    }
+    sync();
+  }
+
+  /**
+   * One moderation ask (Epic 4). The endpoint is host gated
+   * and owner scoped server side; this only carries the
+   * action and surfaces the answer in words.
+   */
+  const moderate = useCallback(
+    async (
+      action: 'mute' | 'mute_all' | 'remove' | 'end' | 'admit' | 'deny',
+      identity?: string,
+    ): Promise<Record<string, unknown> | null> => {
+      try {
+        const res = await fetch(`/api/v0/bookings/${props.bookingId}/moderate`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action, identity }),
+        });
+        const data = (await res.json().catch(() => ({}))) as Record<string, unknown>;
+        if (!res.ok) {
+          pushToast(
+            typeof data.error === 'string'
+              ? data.error
+              : 'That did not work. Try again.',
+          );
+          return null;
+        }
+        return data;
+      } catch {
+        pushToast('That did not work. Check your connection and try again.');
+        return null;
+      }
+    },
+    [props.bookingId, pushToast],
+  );
+
+  // The host's waiting room view (feature 4.3): poll the host
+  // gated waiting endpoint while in the room. One guest per
+  // booking means at most one name here.
+  useEffect(() => {
+    if (!props.isHost) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/v0/bookings/${props.bookingId}/waiting`);
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          admission?: { state: string; name: string } | null;
+        };
+        if (cancelled) return;
+        setWaitingGuest(
+          data.admission?.state === 'waiting' ? { name: data.admission.name } : null,
+        );
+      } catch {
+        // Polling is best effort; the next round retries.
+      }
+    };
+    void load();
+    const timer = setInterval(() => void load(), 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [props.isHost, props.bookingId]);
+
+  async function muteAll() {
+    const data = await moderate('mute_all');
+    setConfirmMuteAll(false);
+    if (!data) return;
+    const count = typeof data.mutedCount === 'number' ? data.mutedCount : 0;
+    pushToast(
+      count > 0
+        ? `Muted ${count} microphone${count === 1 ? '' : 's'}`
+        : 'Everyone else is already muted',
+    );
+    sync();
+  }
+
+  async function endMeeting() {
+    const data = await moderate('end');
+    setConfirmEnd(false);
+    if (!data) return;
+    props.onEnded();
+  }
+
+  const roleFor = (tile: TileView): string =>
+    tile.isLocal ? 'You' : tile.identity.startsWith('host-') ? 'Host' : 'Guest';
 
   async function toggleCamera() {
     setCamPausedNotice(false);
@@ -602,6 +757,71 @@ export function MeetingRoom(props: MeetingRoomProps) {
         </div>
       )}
 
+      {hostMuted && (
+        <div
+          className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2"
+          data-testid="host-muted-notice"
+          role="status"
+        >
+          <p className="text-sm text-text-secondary">
+            The host muted you. You can unmute yourself whenever you are ready.
+          </p>
+          <button
+            type="button"
+            data-testid="host-unmute-button"
+            onClick={() => void unmuteAfterHostMute()}
+            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition hover:text-text-primary"
+          >
+            Unmute
+          </button>
+        </div>
+      )}
+
+      {props.isHost && waitingGuest && (
+        <div
+          className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2"
+          data-testid="waiting-panel"
+          role="status"
+        >
+          <p className="text-sm text-text-secondary">
+            <span className="font-medium text-text-primary">{waitingGuest.name}</span>{' '}
+            is waiting to join
+          </p>
+          <button
+            type="button"
+            data-testid="admit-button"
+            onClick={() => {
+              void (async () => {
+                const data = await moderate('admit');
+                if (data) {
+                  setWaitingGuest(null);
+                  pushToast('Guest admitted');
+                }
+              })();
+            }}
+            className="rounded-lg bg-[var(--primary-color)] px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90"
+          >
+            Let them in
+          </button>
+          <button
+            type="button"
+            data-testid="deny-button"
+            onClick={() => {
+              void (async () => {
+                const data = await moderate('deny');
+                if (data) {
+                  setWaitingGuest(null);
+                  pushToast('Guest denied');
+                }
+              })();
+            }}
+            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition hover:text-text-primary"
+          >
+            Deny
+          </button>
+        </div>
+      )}
+
       {toasts.length > 0 && (
         <div className="mt-4 space-y-2" aria-live="polite">
           {toasts.map((toast) => (
@@ -647,19 +867,19 @@ export function MeetingRoom(props: MeetingRoomProps) {
         <button
           type="button"
           data-testid="room-mic-toggle"
-          aria-pressed={micEnabled}
+          aria-pressed={micEnabled && !hostMuted}
           aria-label={micEnabled ? 'Mute your microphone' : 'Unmute your microphone'}
           onClick={() => void toggleMic()}
           className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium text-white transition ${
-            micEnabled ? 'bg-black/40 hover:bg-black/60' : 'bg-red-600 hover:bg-red-500'
+            micEnabled && !hostMuted ? 'bg-black/40 hover:bg-black/60' : 'bg-red-600 hover:bg-red-500'
           }`}
         >
-          {micEnabled ? (
+          {micEnabled && !hostMuted ? (
             <Mic className="h-4 w-4" aria-hidden />
           ) : (
             <MicOff className="h-4 w-4" aria-hidden />
           )}
-          {micEnabled ? 'Mute' : 'Unmute'}
+          {hostMuted ? 'Unmute' : micEnabled ? 'Mute' : 'Unmute'}
         </button>
 
         <button
@@ -714,6 +934,86 @@ export function MeetingRoom(props: MeetingRoomProps) {
 
         <button
           type="button"
+          data-testid="people-toggle"
+          aria-expanded={peopleOpen}
+          aria-label="See who is in the meeting"
+          onClick={() => setPeopleOpen((v) => !v)}
+          className="flex items-center gap-2 rounded-lg bg-black/40 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-black/60"
+        >
+          <Users className="h-4 w-4" aria-hidden />
+          People ({tiles.length})
+        </button>
+
+        {props.isHost && !confirmMuteAll && (
+          <button
+            type="button"
+            data-testid="mute-all-button"
+            aria-label="Mute every other participant"
+            onClick={() => setConfirmMuteAll(true)}
+            className="flex items-center gap-2 rounded-lg bg-black/40 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-black/60"
+          >
+            <MicOff className="h-4 w-4" aria-hidden />
+            Mute all
+          </button>
+        )}
+        {props.isHost && confirmMuteAll && (
+          <>
+            <span className="text-sm text-text-secondary">Mute every guest?</span>
+            <button
+              type="button"
+              data-testid="mute-all-confirm"
+              onClick={() => void muteAll()}
+              className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-red-500"
+            >
+              Mute all
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmMuteAll(false)}
+              className="rounded-lg px-2 py-2 text-sm text-text-secondary transition hover:text-text-primary"
+            >
+              Cancel
+            </button>
+          </>
+        )}
+
+        {props.isHost && !confirmEnd && (
+          <button
+            type="button"
+            data-testid="end-meeting-button"
+            aria-label="End the meeting for everyone"
+            onClick={() => setConfirmEnd(true)}
+            className="flex items-center gap-2 rounded-lg border border-red-600/60 px-4 py-2.5 text-sm font-medium text-red-400 transition hover:bg-red-600/20"
+          >
+            <PhoneOff className="h-4 w-4" aria-hidden />
+            End meeting
+          </button>
+        )}
+        {props.isHost && confirmEnd && (
+          <>
+            <span className="text-sm text-text-secondary">
+              End the meeting for everyone?
+            </span>
+            <button
+              type="button"
+              data-testid="end-meeting-confirm"
+              onClick={() => void endMeeting()}
+              className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-red-500"
+            >
+              End meeting
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmEnd(false)}
+              className="rounded-lg px-2 py-2 text-sm text-text-secondary transition hover:text-text-primary"
+            >
+              Cancel
+            </button>
+          </>
+        )}
+
+        <button
+          type="button"
           data-testid="leave-button"
           aria-label="Leave the meeting"
           onClick={onLeave}
@@ -723,6 +1023,98 @@ export function MeetingRoom(props: MeetingRoomProps) {
           Leave
         </button>
       </div>
+
+      {peopleOpen && (
+        <div
+          className="mt-4 rounded-xl border border-border p-3"
+          data-testid="participant-list"
+        >
+          <p className="text-sm font-medium">People in this meeting</p>
+          <ul className="mt-2 space-y-2">
+            {tiles.map((tile) => (
+              <li
+                key={tile.identity}
+                data-testid="participant-row"
+                data-identity={tile.identity}
+                className="flex flex-wrap items-center gap-2 text-sm"
+              >
+                <span className="font-medium">{tile.name}</span>
+                <span className="rounded-full border border-border px-2 py-0.5 text-xs text-text-secondary">
+                  {roleFor(tile)}
+                </span>
+                <span className="text-xs text-text-secondary">
+                  {tile.micMuted ? 'Muted' : 'Mic on'}
+                </span>
+                <span className="text-xs text-text-secondary">
+                  {tile.videoTrack ? 'Camera on' : 'Camera off'}
+                </span>
+                {props.isHost && !tile.isLocal && (
+                  <>
+                    {!tile.micMuted && (
+                      <button
+                        type="button"
+                        data-testid="participant-mute"
+                        data-identity={tile.identity}
+                        onClick={() => {
+                          void (async () => {
+                            const data = await moderate('mute', tile.identity);
+                            if (data) pushToast(`Muted ${tile.name}`);
+                            sync();
+                          })();
+                        }}
+                        className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary transition hover:text-text-primary"
+                      >
+                        Mute
+                      </button>
+                    )}
+                    {confirmRemoveId === tile.identity ? (
+                      <>
+                        <span className="text-xs text-text-secondary">Remove them?</span>
+                        <button
+                          type="button"
+                          data-testid="participant-remove-confirm"
+                          data-identity={tile.identity}
+                          onClick={() => {
+                            void (async () => {
+                              const data = await moderate('remove', tile.identity);
+                              setConfirmRemoveId(null);
+                              if (data) pushToast(`Removed ${tile.name}`);
+                              sync();
+                            })();
+                          }}
+                          className="rounded-lg bg-red-600 px-2 py-1 text-xs font-medium text-white transition hover:bg-red-500"
+                        >
+                          Remove
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmRemoveId(null)}
+                          className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary transition hover:text-text-primary"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        data-testid="participant-remove"
+                        data-identity={tile.identity}
+                        onClick={() => setConfirmRemoveId(tile.identity)}
+                        className="rounded-lg border border-red-600/60 px-2 py-1 text-xs text-red-400 transition hover:bg-red-600/20"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+          <p className="mt-2 text-xs text-text-secondary">
+            A guest the host mutes can unmute themselves at any time.
+          </p>
+        </div>
+      )}
 
       {devicesOpen && (
         <div

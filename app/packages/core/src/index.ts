@@ -176,6 +176,13 @@ export const meetingTypeInputSchema = z.object({
   description: z.string().max(1000).default(''),
   lengthMinutes: z.number().int().min(5).max(480).default(30),
   active: z.boolean().default(true),
+  /**
+   * Entry mode (Epic 4, feature 4.3): 'open' lets the guest
+   * enter as soon as the room opens; 'waiting_room' holds them
+   * in a waiting state until the host admits them. Bookings
+   * copy the mode at booking time.
+   */
+  entryMode: z.enum(['open', 'waiting_room']).default('open'),
 });
 export type MeetingTypeInput = z.infer<typeof meetingTypeInputSchema>;
 

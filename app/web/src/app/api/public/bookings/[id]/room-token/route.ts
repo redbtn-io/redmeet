@@ -4,6 +4,7 @@ import { notFound } from '@/lib/api-gate';
 import { getDb } from '@/lib/db';
 import {
   LiveKitNotConfiguredError,
+  RoomAccessError,
   RoomWindowError,
   ensureBookingRoom,
   mintRoomTokenForBooking,
@@ -70,6 +71,15 @@ export async function GET(
       closesAt: minted.closesAt,
     });
   } catch (error) {
+    if (error instanceof RoomAccessError) {
+      // Epic 4: removed by the host, or a waiting room the
+      // host has not admitted them to. Both are 403: the
+      // credential is fine, the access is not granted.
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 403 },
+      );
+    }
     if (error instanceof RoomWindowError) {
       return NextResponse.json(
         {

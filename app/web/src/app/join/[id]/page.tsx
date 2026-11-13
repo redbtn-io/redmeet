@@ -9,7 +9,7 @@ import { lightenColor } from '@redmeet/core';
 import { JoinLobby } from '@/components/join/JoinLobby';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { getDb } from '@/lib/db';
-import { roomClosesAt, roomOpensAt, roomPhase } from '@/lib/rooms';
+import { guestIdentityFor, roomClosesAt, roomOpensAt, roomPhase } from '@/lib/rooms';
 import { resolveSession, secretEquals } from '@/lib/session';
 import { MeetBooking } from '@/models/meet-booking';
 import { MeetHost } from '@/models/meet-host';
@@ -126,6 +126,23 @@ export default async function JoinPage({
     }
   }
 
+  // A removed guest (Epic 4) is told so at the door: their
+  // link is dead for this meeting no matter what the clock
+  // says, and the mint would refuse them anyway.
+  if (
+    !hostMode &&
+    (booking.removedIdentities ?? []).includes(guestIdentityFor(id))
+  ) {
+    return (
+      <Shell color={host.color}>
+        <Message
+          title="You were removed from the meeting"
+          body="The host removed you from this meeting, so this link no longer works. If that is a surprise, reply to your calendar invite and ask the host."
+        />
+      </Shell>
+    );
+  }
+
   const phase = roomPhase(booking, new Date());
   if (phase === 'cancelled') {
     return (
@@ -176,6 +193,7 @@ export default async function JoinPage({
         timeLabel={timeLabel}
         opensAt={roomOpensAt(booking).toISOString()}
         closesAt={roomClosesAt(booking).toISOString()}
+        entryMode={booking.entryMode ?? 'open'}
       />
     </Shell>
   );

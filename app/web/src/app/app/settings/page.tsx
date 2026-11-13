@@ -37,6 +37,7 @@ interface MeetingType {
   name: string;
   description: string;
   lengthMinutes: number;
+  entryMode: 'open' | 'waiting_room';
   active: boolean;
 }
 
@@ -89,7 +90,7 @@ export default function Settings() {
   const [types, setTypes] = useState<MeetingType[]>([]);
   const [saved, setSaved] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState({ slug: '', name: '', description: '', lengthMinutes: 30 });
+  const [draft, setDraft] = useState({ slug: '', name: '', description: '', lengthMinutes: 30, entryMode: 'open' as 'open' | 'waiting_room' });
 
   async function load() {
     const [me, t] = await Promise.all([
@@ -134,7 +135,7 @@ export default function Settings() {
       setError(data.error ?? 'Could not add that meeting type.');
       return;
     }
-    setDraft({ slug: '', name: '', description: '', lengthMinutes: 30 });
+    setDraft({ slug: '', name: '', description: '', lengthMinutes: 30, entryMode: 'open' });
     await load();
   }
 
@@ -261,8 +262,21 @@ export default function Settings() {
                 </p>
                 <p className="truncate text-xs text-text-secondary">
                   {t.lengthMinutes} min{t.description ? `, ${t.description}` : ''}
+                  {t.entryMode === 'waiting_room' ? ', waiting room' : ''}
                 </p>
               </div>
+              <label className="flex items-center gap-2 text-xs text-text-secondary">
+                Entry
+                <select
+                  aria-label={`Entry mode for ${t.name}`}
+                  className="rounded-lg border border-border bg-bg px-2 py-1.5 text-xs text-text-primary"
+                  value={t.entryMode ?? 'open'}
+                  onChange={(e) => void patchType(t.id, { entryMode: e.target.value })}
+                >
+                  <option value="open">Open entry</option>
+                  <option value="waiting_room">Waiting room</option>
+                </select>
+              </label>
               <label className="flex items-center gap-2 text-xs text-text-secondary">
                 <input
                   type="checkbox"
@@ -281,7 +295,7 @@ export default function Settings() {
           ))}
         </div>
 
-        <form onSubmit={addType} className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <form onSubmit={addType} className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
           <input
             className={inputCls}
             placeholder="Name, e.g. Deep dive"
@@ -312,6 +326,15 @@ export default function Settings() {
             onChange={(e) => setDraft({ ...draft, lengthMinutes: Number(e.target.value) })}
             required
           />
+          <select
+            aria-label="Entry mode for the new meeting type"
+            className={inputCls}
+            value={draft.entryMode}
+            onChange={(e) => setDraft({ ...draft, entryMode: e.target.value as 'open' | 'waiting_room' })}
+          >
+            <option value="open">Open entry</option>
+            <option value="waiting_room">Waiting room</option>
+          </select>
           <button type="submit" className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:brightness-110 active:scale-[0.98]">
             Add type
           </button>

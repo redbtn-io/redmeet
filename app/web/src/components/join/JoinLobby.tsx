@@ -34,6 +34,16 @@ import { MeetingRoom } from './MeetingRoom';
  * screen, and the failed screen with its retry when a
  * connection drops for good or the meeting infrastructure
  * cannot be reached at all.
+ *
+ * Epic 4 adds the waiting room (feature 4.3) and the removed
+ * state (feature 4.2). In a waiting room meeting the guest
+ * asks first: the ask mints nothing, the lobby polls the
+ * join-info endpoint for the host's decision, and only an
+ * admitted guest gets the Join button, with the mint
+ * enforcing the same rule server side. A guest the host
+ * removes lands on a removed screen, told apart from a
+ * dropped guest and from an ended meeting by asking
+ * join-info what actually happened on the way out.
  */
 
 export interface JoinLobbyProps {
@@ -47,10 +57,19 @@ export interface JoinLobbyProps {
   timeLabel: string;
   opensAt: string;
   closesAt: string;
+  /** Entry mode carried on the booking (Epic 4, feature 4.3). */
+  entryMode: 'open' | 'waiting_room';
 }
 
-type Screen = 'lobby' | 'connecting' | 'inroom' | 'left' | 'gone' | 'failed';
+type Screen = 'lobby' | 'connecting' | 'inroom' | 'left' | 'gone' | 'failed' | 'removed';
 type PreviewState = 'starting' | 'ready' | 'denied' | 'unavailable';
+type Admission = 'none' | 'waiting' | 'admitted' | 'denied';
+
+interface JoinInfo {
+  phase?: string;
+  admissionState?: Admission;
+  removed?: boolean;
+}
 
 function timeLabel(iso: string): string {
   return new Intl.DateTimeFormat('en-US', { hour: 'numeric', minute: '2-digit' }).format(
@@ -60,6 +79,7 @@ function timeLabel(iso: string): string {
 
 export function JoinLobby(props: JoinLobbyProps) {
   const { bookingId, mode, guestToken, opensAt, closesAt } = props;
+  const waitingRoom = mode === 'guest' && props.entryMode === 'waiting_room';
 
   const [screen, setScreen] = useState<Screen>('lobby');
   const [goneMessage, setGoneMessage] = useState('');
@@ -67,6 +87,8 @@ export function JoinLobby(props: JoinLobbyProps) {
   const [joinError, setJoinError] = useState<string | null>(null);
   const [name, setName] = useState(props.initialName);
   const [roomNonce, setRoomNonce] = useState(0);
+  const [admission, setAdmission] = useState<Admission>('none');
+  const [admissionBusy, setAdmissionBusy] = useState(false);
 
   const [previewState, setPreviewState] = useState<PreviewState>('starting');
   const [camOn, setCamOn] = useState(true);
@@ -214,6 +236,114 @@ export function JoinLobby(props: JoinLobbyProps) {
     };
   }, [stopPreview]);
 
+  /**
+   * The lobby's one read of the booking (Epic 2's join-info,
+   * carrying the Epic 4 admission and removal state). It is
+   * how a waiting guest learns the host's decision, and how a
+   * disconnected guest learns whether they were removed, the
+   * meeting ended, or the connection simply died.
+   */
+  const fetchJoinInfo = useCallback(async (): Promise<JoinInfo | null> => {
+    if (mode !== 'guest' || !guestToken) return null;
+    try {
+      const res = await fetch(
+        `/api/public/bookings/${bookingId}/join-info?t=${encodeURIComponent(guestToken)}`,
+      );
+      if (!res.ok) return null;
+      return (await res.json()) as JoinInfo;
+    } catch {
+      return null;
+    }
+  }, [bookingId, guestToken, mode]);
+
+  // A waiting room guest who reloads after being admitted
+  // should find the Join button waiting, not a fresh ask.
+  useEffect(() => {
+    if (!waitingRoom || screen !== 'lobby') return;
+    let cancelled = false;
+    void (async () => {
+      const info = await fetchJoinInfo();
+      if (cancelled || !info) return;
+      if (info.removed) {
+        setScreen('removed');
+        return;
+      }
+      if (info.admissionState) setAdmission(info.admissionState);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [waitingRoom, screen, fetchJoinInfo]);
+
+  // While the guest waits, poll for the host's decision. The
+  // wait always resolves into words: admitted, denied,
+  // removed, or the meeting ended before a decision came.
+  // Nobody waits on a silent spinner forever.
+  useEffect(() => {
+    if (!waitingRoom || screen !== 'lobby' || admission !== 'waiting') return;
+    const timer = setInterval(() => {
+      void (async () => {
+        const info = await fetchJoinInfo();
+        if (!info) return;
+        if (info.removed) {
+          setScreen('removed');
+          return;
+        }
+        if (info.phase === 'closed' || info.phase === 'cancelled') {
+          setGoneMessage('This meeting has ended. The room has closed.');
+          setScreen('gone');
+          return;
+        }
+        if (info.admissionState && info.admissionState !== 'waiting') {
+          setAdmission(info.admissionState);
+        }
+      })();
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [waitingRoom, screen, admission, fetchJoinInfo]);
+
+  async function askToJoin() {
+    setAdmissionBusy(true);
+    setJoinError(null);
+    try {
+      const res = await fetch(
+        `/api/public/bookings/${bookingId}/waiting-room?t=${encodeURIComponent(guestToken ?? '')}`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ name: name.trim() }),
+        },
+      );
+      const data = (await res.json().catch(() => ({}))) as {
+        code?: string;
+        error?: string;
+      };
+      if (!res.ok) {
+        if (data.code === 'guest_removed') {
+          setScreen('removed');
+          return;
+        }
+        if (data.code === 'room_closed') {
+          setGoneMessage('This meeting has ended. The room has closed.');
+          setScreen('gone');
+          return;
+        }
+        if (data.code === 'booking_cancelled') {
+          setGoneMessage('This meeting was cancelled, so there is no room to join.');
+          setScreen('gone');
+          return;
+        }
+        setJoinError(data.error ?? 'Could not ask to join. Try again.');
+        return;
+      }
+      setAdmission('waiting');
+    } catch {
+      setJoinError('Could not ask to join. Check your connection and try again.');
+    } finally {
+      setAdmissionBusy(false);
+    }
+  }
+
   async function mintToken(): Promise<{ token: string; url: string }> {
     if (mode === 'host') {
       const res = await fetch(`/api/v0/bookings/${bookingId}/room-token`, {
@@ -271,18 +401,41 @@ export function JoinLobby(props: JoinLobbyProps) {
       // event owned here is the final disconnect: LiveKit
       // reconnects on its own through transient drops, so a
       // Disconnected that reaches this handler means it gave
-      // up, and the failed screen takes over with its retry.
-      // A disconnect we asked for (Leave) is not a failure.
+      // up, OR the server ended this participant's time in
+      // the room (Epic 4: the host removed them, or ended the
+      // meeting for everyone). A guest asks join-info which
+      // of those it was before landing anywhere, so a removed
+      // guest sees the removal message and not a fake
+      // connection failure. A disconnect we asked for (Leave)
+      // is none of these.
       room.on(RoomEvent.Disconnected, () => {
         if (roomRef.current !== room) return;
         roomRef.current = null;
         if (intentionalLeaveRef.current) return;
-        if (screenRef.current === 'inroom' || screenRef.current === 'connecting') {
-          setFailedMessage(
-            'The connection to the meeting dropped and could not be restored.',
-          );
-          setScreen('failed');
+        if (screenRef.current !== 'inroom' && screenRef.current !== 'connecting') return;
+        if (mode === 'guest') {
+          void (async () => {
+            const info = await fetchJoinInfo();
+            if (info?.removed) {
+              setScreen('removed');
+              return;
+            }
+            if (info && (info.phase === 'closed' || info.phase === 'cancelled')) {
+              setGoneMessage('The host ended this meeting. The room has closed.');
+              setScreen('gone');
+              return;
+            }
+            setFailedMessage(
+              'The connection to the meeting dropped and could not be restored.',
+            );
+            setScreen('failed');
+          })();
+          return;
         }
+        setFailedMessage(
+          'The connection to the meeting dropped and could not be restored.',
+        );
+        setScreen('failed');
       });
       await room.connect(minted.url, minted.token);
       if (speakerId) {
@@ -310,6 +463,17 @@ export function JoinLobby(props: JoinLobbyProps) {
       } else if (code === 'bad_token') {
         setGoneMessage('That join link is not valid. Use the exact link from your invite.');
         setScreen('gone');
+      } else if (code === 'guest_removed') {
+        setScreen('removed');
+      } else if (code === 'admission_required') {
+        // The host has not admitted this guest (the mint
+        // refuses a publishing token before admission, Epic
+        // 4). Back to the waiting state in plain words; the
+        // lobby poll picks up any later decision.
+        setAdmission('waiting');
+        setJoinError('The host has not let you in yet. You are back in the waiting room.');
+        setScreen('lobby');
+        setPreviewNonce((n) => n + 1);
       } else if (code === 'room_not_open') {
         setJoinError(`The room has not opened yet. It opens at ${timeLabel(opensAt)}.`);
         setScreen('lobby');
@@ -349,6 +513,18 @@ export function JoinLobby(props: JoinLobbyProps) {
       <div className="rounded-2xl border border-border bg-bg-secondary p-8" data-testid="join-gone">
         <h1 className="text-2xl font-semibold">{props.meetingName}</h1>
         <p className="mt-2 text-sm text-text-secondary">{goneMessage}</p>
+      </div>
+    );
+  }
+
+  if (screen === 'removed') {
+    return (
+      <div className="rounded-2xl border border-border bg-bg-secondary p-8" data-testid="join-removed">
+        <h1 className="text-2xl font-semibold">You were removed from the meeting</h1>
+        <p className="mt-2 text-sm text-text-secondary">
+          The host removed you from {props.meetingName}, so this link no longer works.
+          If that is a surprise, reply to your calendar invite and ask the host.
+        </p>
       </div>
     );
   }
@@ -426,10 +602,19 @@ export function JoinLobby(props: JoinLobbyProps) {
       <MeetingRoom
         key={roomNonce}
         room={roomRef.current}
+        bookingId={bookingId}
+        isHost={mode === 'host'}
         meetingName={props.meetingName}
         hostName={props.hostName}
         initialDevices={{ micId, camId, speakerId }}
         onLeave={() => void leave()}
+        onEnded={() => {
+          intentionalLeaveRef.current = true;
+          void roomRef.current?.disconnect().catch(() => undefined);
+          roomRef.current = null;
+          setGoneMessage('You ended this meeting, and the room is closed for everyone.');
+          setScreen('gone');
+        }}
       />
     );
   }
@@ -607,23 +792,83 @@ export function JoinLobby(props: JoinLobbyProps) {
         </p>
       )}
 
-      <button
-        type="button"
-        data-testid="join-button"
-        disabled={notYetOpen || alreadyClosed || !name.trim()}
-        onClick={() => void join()}
-        className="mt-6 rounded-lg bg-[var(--primary-color)] px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-      >
-        {alreadyClosed
-          ? 'This meeting has ended'
-          : notYetOpen
-            ? `Room opens at ${timeLabel(opensAt)}`
-            : 'Join meeting'}
-      </button>
-      {!notYetOpen && !alreadyClosed && (
-        <p className="mt-2 text-xs text-text-secondary">
-          The room is open. It closes at {timeLabel(closesAt)}.
-        </p>
+      {waitingRoom && admission === 'waiting' ? (
+        <div
+          className="mt-6 max-w-md rounded-xl border border-border p-4"
+          data-testid="waiting-panel"
+          role="status"
+        >
+          <p className="text-sm font-medium">You are in the waiting room</p>
+          <p className="mt-1 text-sm text-text-secondary">
+            {props.hostName} will let you in soon. Stay on this page, and you will be
+            able to join the moment they do.
+          </p>
+        </div>
+      ) : waitingRoom && admission === 'denied' ? (
+        <div
+          className="mt-6 max-w-md rounded-xl border border-border p-4"
+          data-testid="admission-denied"
+        >
+          <p className="text-sm font-medium">The host could not admit you</p>
+          <p className="mt-1 text-sm text-text-secondary">
+            That ends this try. If you think it was a mistake, ask again and the host
+            will see a new request.
+          </p>
+          <button
+            type="button"
+            data-testid="ask-again-button"
+            disabled={notYetOpen || alreadyClosed || !name.trim() || admissionBusy}
+            onClick={() => void askToJoin()}
+            className="mt-3 rounded-lg bg-[var(--primary-color)] px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Ask again
+          </button>
+        </div>
+      ) : waitingRoom && admission !== 'admitted' ? (
+        <>
+          <button
+            type="button"
+            data-testid="ask-to-join-button"
+            disabled={notYetOpen || alreadyClosed || !name.trim() || admissionBusy}
+            onClick={() => void askToJoin()}
+            className="mt-6 rounded-lg bg-[var(--primary-color)] px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {alreadyClosed
+              ? 'This meeting has ended'
+              : notYetOpen
+                ? `Room opens at ${timeLabel(opensAt)}`
+                : 'Ask to join'}
+          </button>
+          {!notYetOpen && !alreadyClosed && (
+            <p className="mt-2 text-xs text-text-secondary">
+              This meeting uses a waiting room. Ask to join, and {props.hostName} will
+              let you in.
+            </p>
+          )}
+        </>
+      ) : (
+        <>
+          <button
+            type="button"
+            data-testid="join-button"
+            disabled={notYetOpen || alreadyClosed || !name.trim()}
+            onClick={() => void join()}
+            className="mt-6 rounded-lg bg-[var(--primary-color)] px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {alreadyClosed
+              ? 'This meeting has ended'
+              : notYetOpen
+                ? `Room opens at ${timeLabel(opensAt)}`
+                : 'Join meeting'}
+          </button>
+          {!notYetOpen && !alreadyClosed && (
+            <p className="mt-2 text-xs text-text-secondary">
+              {waitingRoom
+                ? `The host let you in. The room closes at ${timeLabel(closesAt)}.`
+                : `The room is open. It closes at ${timeLabel(closesAt)}.`}
+            </p>
+          )}
+        </>
       )}
     </div>
   );
