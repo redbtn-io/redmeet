@@ -9,6 +9,7 @@ import { lightenColor } from '@redmeet/core';
 import { JoinLobby } from '@/components/join/JoinLobby';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { getDb } from '@/lib/db';
+import { logJoinFailure } from '@/lib/join-events';
 import { guestIdentityFor, roomClosesAt, roomOpensAt, roomPhase } from '@/lib/rooms';
 import { resolveSession, secretEquals } from '@/lib/session';
 import { MeetBooking } from '@/models/meet-booking';
@@ -115,6 +116,11 @@ export default async function JoinPage({
 
   if (!hostMode) {
     if (!t || !booking.guestJoinToken || !secretEquals(booking.guestJoinToken, t)) {
+      // Logged in the Epic 5 vocabulary: a guest who lands
+      // here never reaches the token routes, so this is the
+      // only record that their link was bad. The token value
+      // itself is never logged, only the mismatch.
+      logJoinFailure('bad_token', { bookingId: id, role: 'guest', detail: 'join_page' });
       return (
         <Shell color={host.color}>
           <Message

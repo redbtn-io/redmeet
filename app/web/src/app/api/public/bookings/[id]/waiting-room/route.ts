@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { notFound } from '@/lib/api-gate';
 import { getDb } from '@/lib/db';
+import { logJoinFailure } from '@/lib/join-events';
 import { ModerationError, requestAdmission } from '@/lib/moderation';
 import { RoomAccessError, RoomWindowError } from '@/lib/rooms';
 import { secretEquals } from '@/lib/session';
@@ -34,6 +35,7 @@ export async function POST(
   const booking = await MeetBooking.findById(id);
   if (!booking) return notFound('No such booking');
   if (!presented || !booking.guestJoinToken || !secretEquals(booking.guestJoinToken, presented)) {
+    logJoinFailure('bad_token', { bookingId: id, role: 'guest', detail: 'waiting_room' });
     return NextResponse.json(
       { error: 'That join link is not valid', code: 'bad_token' },
       { status: 403 },
@@ -53,6 +55,11 @@ export async function POST(
     return NextResponse.json({ state: booking.guestAdmissionState });
   } catch (error) {
     if (error instanceof RoomWindowError) {
+      logJoinFailure(error.code === 'room_not_open' ? 'room_not_open' : 'room_closed', {
+        bookingId: id,
+        role: 'guest',
+        detail: 'waiting_room',
+      });
       return NextResponse.json(
         {
           error: error.message,
@@ -64,6 +71,7 @@ export async function POST(
       );
     }
     if (error instanceof RoomAccessError) {
+      logJoinFailure('removed', { bookingId: id, role: 'guest', detail: 'waiting_room' });
       return NextResponse.json(
         { error: error.message, code: error.code },
         { status: 403 },

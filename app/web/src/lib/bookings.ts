@@ -20,7 +20,9 @@ import {
   resolveHostCalendarSelection,
 } from '@/lib/calendar-auth';
 import { getDb } from '@/lib/db';
+import { logMeetingEvent } from '@/lib/join-events';
 import { logger } from '@/lib/log';
+import { resolveMeetingSettings } from '@/lib/meeting-settings';
 import { deleteLiveKitRoom, ensureBookingRoom, guestJoinUrlFor, roomOpensAt } from '@/lib/rooms';
 import {
   MeetBooking,
@@ -255,6 +257,7 @@ export async function createBooking(
 
   await getDb();
   const claimToken = randomUUID();
+  const typeSettings = resolveMeetingSettings(type);
   let booking: HydratedDocument<MeetBookingDoc> | null;
   try {
     booking = await MeetBooking.findOneAndUpdate(
@@ -275,6 +278,15 @@ export async function createBooking(
           end: new Date(slot.endMs),
           status: 'pending_calendar',
           entryMode: type.entryMode ?? 'open',
+          // The behavior settings the booking will run with
+          // (Epic 5): resolved from the meeting type at claim
+          // time, so the booking carries its own numbers even
+          // if the host edits the type later.
+          participantLimit: typeSettings.participantLimit,
+          openLeadMinutes: typeSettings.openLeadMinutes,
+          closeLagMinutes: typeSettings.closeLagMinutes,
+          extensionMinutes: typeSettings.extensionMinutes,
+          extensionsAllowed: typeSettings.extensionsAllowed,
           claimToken,
           calendarAttempts: 0,
         },
@@ -404,6 +416,11 @@ export async function cancelBooking(
   booking.roomStatus = 'closed';
   if (calendarRemoved !== false) booking.calendarError = undefined;
   await booking.save();
+  logMeetingEvent('room_closed', {
+    bookingId: String(booking._id),
+    room: booking.roomId,
+    detail: 'booking_cancelled',
+  });
   await deleteLiveKitRoom(booking.roomId);
   return { booking, calendarRemoved };
 }
@@ -441,5 +458,13 @@ export function bookingJson(booking: MeetBookingDoc, type?: MeetTypeDoc) {
     roomOpensAt: roomOpensAt(booking).toISOString(),
     roomExpiresAt: booking.roomExpiresAt ? booking.roomExpiresAt.toISOString() : null,
     roomExtended: booking.roomExtended ?? false,
+    // The booking's own behavior settings (Epic 5), resolved
+    // so older bookings report the defaults they run with.
+    participantLimit: resolveMeetingSettings(booking).participantLimit,
+    openLeadMinutes: resolveMeetingSettings(booking).openLeadMinutes,
+    closeLagMinutes: resolveMeetingSettings(booking).closeLagMinutes,
+    extensionMinutes: resolveMeetingSettings(booking).extensionMinutes,
+    extensionsAllowed: resolveMeetingSettings(booking).extensionsAllowed,
+    roomExtensionsUsed: booking.roomExtensionsUsed ?? (booking.roomExtended ? 1 : 0),
   };
 }

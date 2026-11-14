@@ -44,6 +44,16 @@ import { MeetingRoom } from './MeetingRoom';
  * removes lands on a removed screen, told apart from a
  * dropped guest and from an ended meeting by asking
  * join-info what actually happened on the way out.
+ *
+ * Epic 5 completes the error state set and the reporting.
+ * A full meeting is its own screen now (the mint answers
+ * room_full at the booking's participant limit), distinct
+ * from ended and from unreachable. And the client reports
+ * what only it can know to the join-events endpoint: a
+ * participant connected, a participant left on purpose, a
+ * browser blocked the camera or mic, a connect died for
+ * good. Those reports are the client half of the failure
+ * vocabulary in the server logs.
  */
 
 export interface JoinLobbyProps {
@@ -83,6 +93,7 @@ export function JoinLobby(props: JoinLobbyProps) {
 
   const [screen, setScreen] = useState<Screen>('lobby');
   const [goneMessage, setGoneMessage] = useState('');
+  const [full, setFull] = useState(false);
   const [failedMessage, setFailedMessage] = useState('');
   const [joinError, setJoinError] = useState<string | null>(null);
   const [name, setName] = useState(props.initialName);
@@ -109,6 +120,39 @@ export function JoinLobby(props: JoinLobbyProps) {
   const levelAudioRef = useRef<{ ctx: AudioContext; raf: number } | null>(null);
   const roomRef = useRef<Room | null>(null);
   const intentionalLeaveRef = useRef(false);
+  const joinedReportedRef = useRef(false);
+  const blockedReportedRef = useRef(false);
+
+  /**
+   * Report what only the client knows (Epic 5): a connect
+   * that landed, a leave that was on purpose, a browser
+   * block, a connect that died. Fire and forget by design:
+   * reporting must never break joining, and the endpoint
+   * validates everything it logs. A guest sends the join
+   * token it already holds; the host sends nothing and the
+   * endpoint reads their session instead.
+   */
+  function reportClientEvent(
+    kind: 'joined' | 'left' | 'failure',
+    failureType?: string,
+  ) {
+    void fetch(`/api/public/bookings/${bookingId}/join-events`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        ...(guestToken ? { t: guestToken } : {}),
+        kind,
+        ...(failureType ? { failureType } : {}),
+      }),
+      keepalive: kind === 'left',
+    }).catch(() => undefined);
+  }
+
+  function reportJoinedOnce() {
+    if (joinedReportedRef.current) return;
+    joinedReportedRef.current = true;
+    reportClientEvent('joined');
+  }
   const screenRef = useRef<Screen>('lobby');
   screenRef.current = screen;
 
@@ -186,6 +230,13 @@ export function JoinLobby(props: JoinLobbyProps) {
     } catch (error) {
       const name = (error as { name?: string })?.name ?? '';
       setPreviewState(name === 'NotFoundError' || name === 'OverconstrainedError' ? 'unavailable' : 'denied');
+      // The browser blocked the preview, or there is no
+      // device to preview with: only the client knows, so
+      // the client reports it (Epic 5), once per lobby visit.
+      if (!blockedReportedRef.current) {
+        blockedReportedRef.current = true;
+        reportClientEvent('failure', 'browser_blocked');
+      }
     }
   }, [camOn, micOn, camId, micId, refreshDevices, startLevelMeter, stopPreview]);
 
@@ -425,6 +476,8 @@ export function JoinLobby(props: JoinLobbyProps) {
               setScreen('gone');
               return;
             }
+            joinedReportedRef.current = false;
+            reportClientEvent('failure', 'livekit_unreachable');
             setFailedMessage(
               'The connection to the meeting dropped and could not be restored.',
             );
@@ -432,6 +485,8 @@ export function JoinLobby(props: JoinLobbyProps) {
           })();
           return;
         }
+        joinedReportedRef.current = false;
+        reportClientEvent('failure', 'livekit_unreachable');
         setFailedMessage(
           'The connection to the meeting dropped and could not be restored.',
         );
@@ -450,11 +505,22 @@ export function JoinLobby(props: JoinLobbyProps) {
       if (useCam) await room.localParticipant.setCameraEnabled(true);
       setRoomNonce((n) => n + 1);
       setScreen('inroom');
+      reportJoinedOnce();
     } catch (error) {
       const code = (error as { code?: string })?.code ?? '';
       void roomRef.current?.disconnect().catch(() => undefined);
       roomRef.current = null;
-      if (code === 'room_closed') {
+      if (code === 'room_full') {
+        // Epic 5, story 5.1.3: every seat is taken. Its own
+        // screen, because the next step (wait for a seat, or
+        // ask the host for another time) is not the next step
+        // for an ended meeting or a dead server.
+        setFull(true);
+        setGoneMessage(
+          'This meeting is full. Every seat is taken right now. If someone leaves, a seat opens up, so you can check again in a bit. Or reply to your calendar invite and ask the host about another time.',
+        );
+        setScreen('gone');
+      } else if (code === 'room_closed') {
         setGoneMessage('This meeting has ended. The room has closed.');
         setScreen('gone');
       } else if (code === 'booking_cancelled') {
@@ -482,11 +548,19 @@ export function JoinLobby(props: JoinLobbyProps) {
         setJoinError('Video is not set up for this meeting yet. Let the host know.');
         setScreen('lobby');
         setPreviewNonce((n) => n + 1);
+      } else if (code === 'livekit_unreachable') {
+        setFailedMessage(
+          'Meeting infrastructure is unreachable right now. Check your connection, then try again.',
+        );
+        setScreen('failed');
       } else {
         // The mint answered but the connect itself failed:
         // the meeting infrastructure could not be reached.
         // Plain words and a retry, the redChat voice style
-        // (story 3.5.4).
+        // (story 3.5.4). The client reports it too (Epic 5),
+        // so an unreachable media server is visible in the
+        // logs as itself, not as a pile of mint successes.
+        reportClientEvent('failure', 'livekit_unreachable');
         setFailedMessage(
           'Meeting infrastructure is unreachable right now. Check your connection, then try again.',
         );
@@ -497,6 +571,8 @@ export function JoinLobby(props: JoinLobbyProps) {
 
   async function leave() {
     intentionalLeaveRef.current = true;
+    reportClientEvent('left');
+    joinedReportedRef.current = false;
     await roomRef.current?.disconnect().catch(() => undefined);
     roomRef.current = null;
     setScreen('left');
@@ -510,9 +586,27 @@ export function JoinLobby(props: JoinLobbyProps) {
 
   if (screen === 'gone') {
     return (
-      <div className="rounded-2xl border border-border bg-bg-secondary p-8" data-testid="join-gone">
+      <div
+        className="rounded-2xl border border-border bg-bg-secondary p-8"
+        data-testid={full ? 'join-full' : 'join-gone'}
+      >
         <h1 className="text-2xl font-semibold">{props.meetingName}</h1>
         <p className="mt-2 text-sm text-text-secondary">{goneMessage}</p>
+        {full && (
+          <button
+            type="button"
+            data-testid="full-check-again"
+            onClick={() => {
+              setFull(false);
+              applyRememberedDevices();
+              setScreen('lobby');
+              setPreviewNonce((n) => n + 1);
+            }}
+            className="mt-6 rounded-lg bg-[var(--primary-color)] px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90"
+          >
+            Check again
+          </button>
+        )}
       </div>
     );
   }
