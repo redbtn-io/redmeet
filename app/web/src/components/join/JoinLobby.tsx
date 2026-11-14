@@ -698,6 +698,7 @@ export function JoinLobby(props: JoinLobbyProps) {
         room={roomRef.current}
         bookingId={bookingId}
         isHost={mode === 'host'}
+        guestToken={guestToken}
         meetingName={props.meetingName}
         hostName={props.hostName}
         initialDevices={{ micId, camId, speakerId }}

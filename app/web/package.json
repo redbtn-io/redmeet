@@ -1,5 +1,6 @@
 {
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1045.0",
     "@redbtn/redauth": "1.7.0",
     "@redbtn/redlabel": "0.1.0",
     "@redbtn/redstyle": "0.6.2",

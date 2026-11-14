@@ -2,9 +2,10 @@ import 'server-only';
 
 import mongoose from 'mongoose';
 
-import { getConfig, getLiveKitConfig } from '@/lib/config';
+import { getConfig, getLiveKitConfig, getRecordingStorageConfig } from '@/lib/config';
 import { getDb } from '@/lib/db';
 import { mintRoomToken, verifyRoomToken } from '@/lib/livekit';
+import { checkRecordingBucket } from '@/lib/recording-storage';
 
 /**
  * Real dependency checks for /api/health (Epic 0). The old endpoint
@@ -37,6 +38,7 @@ export interface HealthReport {
     gateway: HealthCheckResult;
     livekit: HealthCheckResult;
     token: HealthCheckResult;
+    recording: HealthCheckResult;
   };
 }
 
@@ -131,15 +133,34 @@ export async function checkTokenReadiness(): Promise<HealthCheckResult> {
   }
 }
 
+/**
+ * Recording storage readiness (Epic 6). Recording is an
+ * optional feature riding on provisioned storage, so an
+ * UNconfigured deployment is healthy with the feature off,
+ * and the check only goes red when storage is configured
+ * but the bucket cannot be reached or the credentials are
+ * wrong: the state where a host would press Record and hit
+ * a wall the health page should have named first.
+ */
+export async function checkRecordingStorage(): Promise<HealthCheckResult> {
+  const storage = getRecordingStorageConfig();
+  if (!storage) return { ok: true, detail: 'not configured, recording is off' };
+  return withTimeout(checkRecordingBucket(storage), CHECK_TIMEOUT_MS).catch((error) => ({
+    ok: false,
+    detail: String(error).slice(0, 200),
+  }));
+}
+
 export async function checkHealth(): Promise<HealthReport> {
-  const [mongo, gateway, livekit, token] = await Promise.all([
+  const [mongo, gateway, livekit, token, recording] = await Promise.all([
     checkMongo(),
     checkGateway(),
     checkLiveKit(),
     checkTokenReadiness(),
+    checkRecordingStorage(),
   ]);
   return {
-    ok: mongo.ok && gateway.ok && livekit.ok && token.ok,
-    checks: { mongo, gateway, livekit, token },
+    ok: mongo.ok && gateway.ok && livekit.ok && token.ok && recording.ok,
+    checks: { mongo, gateway, livekit, token, recording },
   };
 }

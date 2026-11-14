@@ -39,6 +39,20 @@ export type RoomStatus = 'not_created' | 'live' | 'closed';
  */
 export type GuestAdmissionState = 'none' | 'waiting' | 'admitted' | 'denied';
 
+/**
+ * Recording state (Epic 6), one recording per booking.
+ * `idle` is a meeting that was never recorded (or has not
+ * started recording yet); `recording` is a live Egress job;
+ * `processing` is a stopped job whose file is still being
+ * written and uploaded; `ready` means the file is stored
+ * against the booking with its duration and size; `failed`
+ * means Egress reported a failure or the job vanished, with
+ * the reason kept in recordingError. A recording is only ever
+ * `ready` when Egress itself reported completion with a file
+ * result.
+ */
+export type RecordingStatus = 'idle' | 'recording' | 'processing' | 'ready' | 'failed';
+
 /** Statuses that hold their slot against new bookings. */
 export const SLOT_HOLDING_STATUSES: BookingStatus[] = [
   'pending_calendar',
@@ -132,6 +146,26 @@ export interface MeetBookingDoc {
   removedIdentities: string[];
   /** When the host ended the meeting (Epic 4, feature 4.2). */
   roomEndedAt?: Date;
+  /**
+   * Recording fields (Epic 6). The recording belongs to the
+   * booking, like the room. The object key is the only storage
+   * reference stored; the bucket and endpoint are deployment
+   * config, and the file itself is only ever served through
+   * the host gated playback route, never a public URL.
+   */
+  recordingStatus: RecordingStatus;
+  /** The LiveKit Egress job id for this booking's recording. */
+  recordingEgressId?: string;
+  recordingStartedAt?: Date;
+  recordingStoppedAt?: Date;
+  /** Object key of the finished MP4 in the recording bucket. */
+  recordingKey?: string;
+  /** Duration of the finished file in seconds, from Egress's own file result. */
+  recordingDurationSeconds?: number;
+  /** Size of the finished file in bytes, from Egress's own file result. */
+  recordingSizeBytes?: number;
+  /** Why the recording failed, in words a host can act on. Set only when failed. */
+  recordingError?: string;
   /** When the host cancelled the booking. */
   cancelledAt?: Date;
   createdAt: Date;
@@ -191,6 +225,19 @@ const meetBookingSchema = new Schema<MeetBookingDoc>(
     guestAdmissionDecidedAt: Date,
     removedIdentities: { type: [String], default: [] },
     roomEndedAt: Date,
+    recordingStatus: {
+      type: String,
+      enum: ['idle', 'recording', 'processing', 'ready', 'failed'],
+      required: true,
+      default: 'idle',
+    },
+    recordingEgressId: String,
+    recordingStartedAt: Date,
+    recordingStoppedAt: Date,
+    recordingKey: String,
+    recordingDurationSeconds: Number,
+    recordingSizeBytes: Number,
+    recordingError: String,
     cancelledAt: Date,
   },
   { timestamps: true },
@@ -205,6 +252,8 @@ meetBookingSchema.index(
 );
 // The reconciliation sweep scans by status and age.
 meetBookingSchema.index({ status: 1, updatedAt: 1 });
+// The recording sweep (Epic 6) scans by recording status.
+meetBookingSchema.index({ recordingStatus: 1, updatedAt: 1 });
 
 export const MeetBooking: Model<MeetBookingDoc> =
   models.MeetBooking ?? model<MeetBookingDoc>('MeetBooking', meetBookingSchema);

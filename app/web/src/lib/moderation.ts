@@ -8,6 +8,7 @@ import { getLiveKitConfig } from '@/lib/config';
 import { logJoinFailure, logMeetingEvent } from '@/lib/join-events';
 import { roomService } from '@/lib/livekit';
 import { logger } from '@/lib/log';
+import { stopRecordingIfActive } from '@/lib/recording';
 import {
   LiveKitNotConfiguredError,
   LiveKitUnreachableError,
@@ -224,6 +225,10 @@ export async function removeParticipantFromRoom(
  * and land on "The meeting ended".
  */
 export async function endMeeting(booking: Booking): Promise<void> {
+  // A live recording stops with the meeting (Epic 6): the
+  // file keeps settling onto the booking afterwards through
+  // the refresh paths, so ending never waits on Egress.
+  await stopRecordingIfActive(booking, 'meeting_ended');
   booking.roomStatus = 'closed';
   booking.roomEndedAt = new Date();
   await booking.save();

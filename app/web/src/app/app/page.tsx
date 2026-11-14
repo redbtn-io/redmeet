@@ -34,6 +34,25 @@ interface Booking {
   meetingName: string;
   calendarError: string | null;
   guestJoinUrl?: string | null;
+  recording?: {
+    status: string;
+    durationSeconds: number | null;
+    sizeBytes: number | null;
+    error: string | null;
+  } | null;
+}
+
+function formatBytes(bytes: number | null): string {
+  if (bytes === null) return '';
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatDuration(seconds: number | null): string {
+  if (seconds === null) return '';
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m > 0 ? `${m} min ${s} sec` : `${s} sec`;
 }
 
 /**
@@ -271,6 +290,47 @@ export default function Dashboard() {
                         {b.status === 'calendar_failed' && b.calendarError && (
                           <div className="mt-1 truncate text-xs opacity-80" title={b.calendarError}>
                             Invite failed: {b.calendarError}
+                          </div>
+                        )}
+                        {b.recording && b.recording.status !== 'idle' && (
+                          <div className="mt-2 rounded bg-black/25 p-2" data-testid="booking-recording">
+                            {b.recording.status === 'ready' && (
+                              <>
+                                <div className="text-xs font-medium">
+                                  Recording, {formatDuration(b.recording.durationSeconds)}
+                                  {b.recording.sizeBytes !== null &&
+                                    `, ${formatBytes(b.recording.sizeBytes)}`}
+                                </div>
+                                <video
+                                  controls
+                                  preload="metadata"
+                                  src={`/api/v0/bookings/${b.id}/recording`}
+                                  className="mt-2 w-full max-w-md rounded"
+                                />
+                                <a
+                                  href={`/api/v0/bookings/${b.id}/recording?download=1`}
+                                  className="mt-2 inline-block cursor-pointer rounded bg-white px-2 py-1 text-xs font-medium text-black transition hover:bg-white/85"
+                                >
+                                  Download recording
+                                </a>
+                              </>
+                            )}
+                            {b.recording.status === 'recording' && (
+                              <div className="text-xs">Recording is in progress.</div>
+                            )}
+                            {b.recording.status === 'processing' && (
+                              <div className="text-xs">
+                                The recording is finishing. It will appear here shortly; reload
+                                the page to check.
+                              </div>
+                            )}
+                            {b.recording.status === 'failed' && (
+                              <div className="text-xs">
+                                Recording failed
+                                {b.recording.error ? `: ${b.recording.error}` : ''}. The meeting
+                                itself was not affected.
+                              </div>
+                            )}
                           </div>
                         )}
                         {b.status !== 'cancelled' && !ended && (
