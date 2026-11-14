@@ -3,6 +3,7 @@ import 'server-only';
 import { getDb } from '@/lib/db';
 import { logger } from '@/lib/log';
 import { MAX_AUTO_CALENDAR_ATTEMPTS, retryBookingCalendar } from '@/lib/bookings';
+import { refreshRecording } from '@/lib/recording';
 import { MeetBooking } from '@/models/meet-booking';
 import { MeetHost } from '@/models/meet-host';
 
@@ -71,6 +72,44 @@ export async function reconcileFailedBookings(nowMs: number = Date.now()): Promi
   }
 }
 
+let recordingSweeping = false;
+
+/**
+ * Recording settle sweep (Epic 6). A recording whose host
+ * never comes back to the dashboard still has to land on its
+ * booking: this pass refreshes every booking with a live or
+ * processing recording from Egress's own report, so finished
+ * files settle to ready and failed jobs settle to failed with
+ * their reason, even if nobody ever polls. It runs on the
+ * calendar sweep's interval; a recording stuck `recording`
+ * after its room is long gone settles the same way, because
+ * Egress ends the job when the room empties and closes.
+ */
+export async function reconcileRecordings(): Promise<number> {
+  if (recordingSweeping) return 0;
+  recordingSweeping = true;
+  try {
+    await getDb();
+    const candidates = await MeetBooking.find({
+      recordingStatus: { $in: ['recording', 'processing'] },
+    })
+      .sort({ updatedAt: 1 })
+      .limit(BATCH_LIMIT);
+    let settled = 0;
+    for (const booking of candidates) {
+      const before = booking.recordingStatus;
+      await refreshRecording(booking);
+      if (booking.recordingStatus !== before) settled += 1;
+    }
+    return settled;
+  } catch (error) {
+    logger.error('recording reconciliation sweep failed', { error: String(error) });
+    return 0;
+  } finally {
+    recordingSweeping = false;
+  }
+}
+
 const globalState = globalThis as { __redmeetReconcilerStarted?: boolean };
 
 /** Start the sweep interval once per process. Safe to call again. */
@@ -79,10 +118,12 @@ export function startCalendarReconciler(): void {
   globalState.__redmeetReconcilerStarted = true;
   const first = setTimeout(() => {
     void reconcileFailedBookings();
+    void reconcileRecordings();
   }, SWEEP_FIRST_RUN_DELAY_MS);
   first.unref?.();
   const timer = setInterval(() => {
     void reconcileFailedBookings();
+    void reconcileRecordings();
   }, SWEEP_INTERVAL_MS);
   timer.unref?.();
   logger.info('calendar reconciliation sweep started', {

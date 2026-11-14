@@ -46,6 +46,24 @@ export interface Config {
   livekitUrl: string | null;
   livekitApiKey: string | null;
   livekitApiSecret: string | null;
+  /**
+   * Recording storage (Epic 6): the fleet's S3 pattern, the same
+   * env names Become and the hub distribution use against the
+   * fleet MinIO. Egress uploads the finished MP4 straight into
+   * this bucket with these credentials carried in the egress
+   * request, and the playback route reads it back with the same
+   * pair. `s3Bucket` defaults to redMeet's own bucket name; the
+   * endpoint and credentials are null until provisioned, and
+   * recording fails closed (a plain "recording is not set up"
+   * answer) in that state, never against a guessed endpoint.
+   * Never logged.
+   */
+  s3Endpoint: string | null;
+  s3Bucket: string;
+  s3AccessKeyId: string | null;
+  s3SecretAccessKey: string | null;
+  s3Region: string;
+  s3ForcePathStyle: boolean;
 }
 
 let cached: Config | null = null;
@@ -73,6 +91,12 @@ export function getConfig(): Config {
       livekitUrl: envOrNull('LIVEKIT_URL')?.replace(/\/+$/, '') ?? null,
       livekitApiKey: envOrNull('LIVEKIT_API_KEY'),
       livekitApiSecret: envOrNull('LIVEKIT_API_SECRET'),
+      s3Endpoint: envOrNull('S3_ENDPOINT')?.replace(/\/+$/, '') ?? null,
+      s3Bucket: envOrNull('S3_BUCKET') ?? 'redmeet-recordings',
+      s3AccessKeyId: envOrNull('S3_ACCESS_KEY_ID'),
+      s3SecretAccessKey: envOrNull('S3_SECRET_ACCESS_KEY'),
+      s3Region: envOrNull('S3_REGION') ?? 'us-east-1',
+      s3ForcePathStyle: (envOrNull('S3_FORCE_PATH_STYLE') ?? 'true') === 'true',
     };
   }
   return cached;
@@ -98,4 +122,33 @@ export function getLiveKitConfig(): LiveKitConfig | null {
   const { livekitUrl, livekitApiKey, livekitApiSecret } = getConfig();
   if (!livekitUrl || !livekitApiKey || !livekitApiSecret) return null;
   return { url: livekitUrl, apiKey: livekitApiKey, apiSecret: livekitApiSecret };
+}
+
+export interface RecordingStorageConfig {
+  endpoint: string;
+  bucket: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  region: string;
+  forcePathStyle: boolean;
+}
+
+/**
+ * The recording storage config, or null when any piece is
+ * missing. One place decides "is recording storage set up", so
+ * the record endpoint, the egress request builder, the
+ * playback route, and the health check all agree, exactly the
+ * way getLiveKitConfig does for rooms.
+ */
+export function getRecordingStorageConfig(): RecordingStorageConfig | null {
+  const c = getConfig();
+  if (!c.s3Endpoint || !c.s3AccessKeyId || !c.s3SecretAccessKey) return null;
+  return {
+    endpoint: c.s3Endpoint,
+    bucket: c.s3Bucket,
+    accessKeyId: c.s3AccessKeyId,
+    secretAccessKey: c.s3SecretAccessKey,
+    region: c.s3Region,
+    forcePathStyle: c.s3ForcePathStyle,
+  };
 }

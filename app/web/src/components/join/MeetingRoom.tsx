@@ -78,6 +78,13 @@ export interface MeetingRoomProps {
   bookingId: string;
   /** True when the local participant is the booking's host. */
   isHost: boolean;
+  /**
+   * The guest's join token (Epic 6): guests poll the public
+   * join-info endpoint with it for server driven room state
+   * (the recording indicator above all). Null for the host,
+   * whose poll is the session gated waiting endpoint.
+   */
+  guestToken: string | null;
   meetingName: string;
   hostName: string;
   initialDevices: DeviceMemory;
@@ -111,6 +118,13 @@ const KIND_LABEL = {
 } as const;
 
 type DeviceKind = keyof typeof KIND_LABEL;
+
+/** mm:ss for the recording clock. */
+function formatElapsed(totalSeconds: number): string {
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
 
 function ShareStage({ share }: { share: ShareView }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -168,6 +182,19 @@ export function MeetingRoom(props: MeetingRoomProps) {
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
   const [waitingGuest, setWaitingGuest] = useState<{ name: string } | null>(null);
+  // Epic 6 recording: the state is the SERVER's (polled from
+  // the booking), never this client's guess, so every
+  // participant's indicator agrees and a late joiner sees
+  // recording is on from their first poll.
+  const [recordingStatus, setRecordingStatus] = useState<
+    'idle' | 'recording' | 'processing' | 'ready' | 'failed'
+  >('idle');
+  const [recordingStartedAt, setRecordingStartedAt] = useState<string | null>(null);
+  const [recordingAnnouncement, setRecordingAnnouncement] = useState(false);
+  const [confirmRecord, setConfirmRecord] = useState(false);
+  const [recordBusy, setRecordBusy] = useState(false);
+  const [recordElapsed, setRecordElapsed] = useState(0);
+  const announcedStartRef = useRef<string | null>(null);
   const [deviceLists, setDeviceLists] = useState<DeviceLists>({
     mics: [],
     cams: [],
@@ -590,7 +617,8 @@ export function MeetingRoom(props: MeetingRoomProps) {
 
   // The host's waiting room view (feature 4.3): poll the host
   // gated waiting endpoint while in the room. One guest per
-  // booking means at most one name here.
+  // booking means at most one name here. Epic 6: the same
+  // poll carries the recording state for the host's room.
   useEffect(() => {
     if (!props.isHost) return;
     let cancelled = false;
@@ -600,11 +628,13 @@ export function MeetingRoom(props: MeetingRoomProps) {
         if (!res.ok) return;
         const data = (await res.json()) as {
           admission?: { state: string; name: string } | null;
+          recording?: { status: string; startedAt: string | null };
         };
         if (cancelled) return;
         setWaitingGuest(
           data.admission?.state === 'waiting' ? { name: data.admission.name } : null,
         );
+        if (data.recording) applyRecordingState(data.recording);
       } catch {
         // Polling is best effort; the next round retries.
       }
@@ -615,7 +645,115 @@ export function MeetingRoom(props: MeetingRoomProps) {
       cancelled = true;
       clearInterval(timer);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.isHost, props.bookingId]);
+
+  /**
+   * One recording state read (Epic 6): adopt the server's
+   * state, and when recording is on and this participant has
+   * not been told about THIS recording yet (its start time
+   * is the identity), raise the announcement. A late joiner's
+   * first read announces too: consent is visible, not buried,
+   * for everyone, whenever they arrived.
+   */
+  function applyRecordingState(next: { status: string; startedAt: string | null }) {
+    const status = next.status as typeof recordingStatus;
+    setRecordingStatus(status);
+    setRecordingStartedAt(next.startedAt);
+    if (status === 'recording' && next.startedAt && announcedStartRef.current !== next.startedAt) {
+      announcedStartRef.current = next.startedAt;
+      setRecordingAnnouncement(true);
+    }
+  }
+
+  // The guest's recording state (Epic 6): guests hold no
+  // session, so their poll is the public join-info endpoint
+  // with the join token, the same credential that got them
+  // into the room. It returns the recording state and nothing
+  // about the file (story 6.2.2).
+  useEffect(() => {
+    if (props.isHost || !props.guestToken) return;
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await fetch(
+          `/api/public/bookings/${props.bookingId}/join-info?t=${encodeURIComponent(props.guestToken!)}`,
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          recording?: { status: string; startedAt: string | null };
+        };
+        if (cancelled || !data.recording) return;
+        applyRecordingState(data.recording);
+      } catch {
+        // Polling is best effort; the next round retries.
+      }
+    };
+    void load();
+    const timer = setInterval(() => void load(), 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [props.isHost, props.bookingId, props.guestToken]);
+
+  // The recording clock: elapsed time since the server said
+  // recording started, ticked locally for display.
+  useEffect(() => {
+    if (recordingStatus !== 'recording' || !recordingStartedAt) {
+      setRecordElapsed(0);
+      return;
+    }
+    const started = new Date(recordingStartedAt).getTime();
+    const tick = () => setRecordElapsed(Math.max(0, Math.floor((Date.now() - started) / 1000)));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [recordingStatus, recordingStartedAt]);
+
+  /**
+   * One recording ask (Epic 6). The endpoint is host gated
+   * and performs the Egress call server side; this surfaces
+   * the answer in words, including the capacity refusal,
+   * which arrives as a plain message by design.
+   */
+  const recordAction = useCallback(
+    async (action: 'start' | 'stop'): Promise<boolean> => {
+      setRecordBusy(true);
+      try {
+        const res = await fetch(`/api/v0/bookings/${props.bookingId}/record`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ action }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          recording?: { status: string; startedAt: string | null };
+        };
+        if (!res.ok) {
+          pushToast(
+            typeof data.error === 'string' ? data.error : 'That did not work. Try again.',
+          );
+          return false;
+        }
+        if (data.recording) applyRecordingState(data.recording);
+        pushToast(
+          action === 'start'
+            ? 'Recording started. Everyone in the meeting can see that recording is on.'
+            : 'Recording stopped. It will appear on the booking in your dashboard when it is ready.',
+        );
+        return true;
+      } catch {
+        pushToast('That did not work. Check your connection and try again.');
+        return false;
+      } finally {
+        setRecordBusy(false);
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    },
+    [props.bookingId, pushToast],
+  );
 
   async function muteAll() {
     const data = await moderate('mute_all');
@@ -710,13 +848,49 @@ export function MeetingRoom(props: MeetingRoomProps) {
             {tiles.length === 1 ? 'person' : 'people'} in the meeting
           </p>
         </div>
-        <span
-          className="rounded-full bg-black/25 px-3 py-1 text-xs font-medium"
-          data-testid="connected-badge"
-        >
-          {badgeText}
-        </span>
+        <div className="flex items-center gap-2">
+          {recordingStatus === 'recording' && (
+            <span
+              className="flex items-center gap-2 rounded-full bg-red-600/20 px-3 py-1 text-xs font-medium text-red-300"
+              data-testid="recording-indicator"
+              role="status"
+            >
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
+              </span>
+              Recording {formatElapsed(recordElapsed)}
+            </span>
+          )}
+          <span
+            className="rounded-full bg-black/25 px-3 py-1 text-xs font-medium"
+            data-testid="connected-badge"
+          >
+            {badgeText}
+          </span>
+        </div>
       </div>
+
+      {recordingAnnouncement && recordingStatus === 'recording' && (
+        <div
+          className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-red-500/50 px-3 py-2"
+          data-testid="recording-announcement"
+          role="status"
+        >
+          <p className="text-sm text-text-secondary">
+            <span className="font-medium text-text-primary">This meeting is being recorded.</span>{' '}
+            Recording is on, and everyone in the meeting can see it. The recording belongs to
+            the host and will sit on the booking in their dashboard.
+          </p>
+          <button
+            type="button"
+            onClick={() => setRecordingAnnouncement(false)}
+            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition hover:text-text-primary"
+          >
+            Got it
+          </button>
+        </div>
+      )}
 
       {connBadge === 'reconnecting' && (
         <p
@@ -919,6 +1093,72 @@ export function MeetingRoom(props: MeetingRoomProps) {
           )}
           {localSharing ? 'Stop sharing' : 'Share screen'}
         </button>
+
+        {props.isHost && recordingStatus === 'recording' && (
+          <button
+            type="button"
+            data-testid="record-stop-button"
+            aria-label="Stop recording"
+            disabled={recordBusy}
+            onClick={() => void recordAction('stop')}
+            className="flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-red-500 disabled:opacity-50"
+          >
+            <span className="h-2.5 w-2.5 rounded-[3px] bg-white" aria-hidden />
+            Stop recording {formatElapsed(recordElapsed)}
+          </button>
+        )}
+        {props.isHost && recordingStatus === 'processing' && (
+          <button
+            type="button"
+            data-testid="record-processing-button"
+            disabled
+            className="flex items-center gap-2 rounded-lg bg-black/40 px-4 py-2.5 text-sm font-medium text-white opacity-60"
+          >
+            Recording is finishing...
+          </button>
+        )}
+        {props.isHost &&
+          recordingStatus !== 'recording' &&
+          recordingStatus !== 'processing' &&
+          !confirmRecord && (
+            <button
+              type="button"
+              data-testid="record-start-button"
+              aria-label="Start recording this meeting"
+              disabled={recordBusy}
+              onClick={() => setConfirmRecord(true)}
+              className="flex items-center gap-2 rounded-lg bg-black/40 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-black/60 disabled:opacity-50"
+            >
+              <span className="h-2.5 w-2.5 rounded-full bg-red-500" aria-hidden />
+              Record
+            </button>
+          )}
+        {props.isHost && confirmRecord && (
+          <>
+            <span className="text-sm text-text-secondary">
+              Start recording? Everyone will see that recording is on.
+            </span>
+            <button
+              type="button"
+              data-testid="record-start-confirm"
+              disabled={recordBusy}
+              onClick={() => {
+                setConfirmRecord(false);
+                void recordAction('start');
+              }}
+              className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-red-500 disabled:opacity-50"
+            >
+              Start recording
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmRecord(false)}
+              className="rounded-lg px-2 py-2 text-sm text-text-secondary transition hover:text-text-primary"
+            >
+              Cancel
+            </button>
+          </>
+        )}
 
         <button
           type="button"

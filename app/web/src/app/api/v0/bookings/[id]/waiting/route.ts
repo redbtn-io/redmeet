@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { gate, notFound } from '@/lib/api-gate';
 import { getDb } from '@/lib/db';
 import { ensureHost } from '@/lib/hosts';
+import { recordingStateFor } from '@/lib/recording';
 import { roomPhase } from '@/lib/rooms';
 import { MeetBooking } from '@/models/meet-booking';
 
@@ -33,6 +34,10 @@ export async function GET(
   return NextResponse.json({
     entryMode: booking.entryMode ?? 'open',
     phase: roomPhase(booking, new Date()),
+    // Epic 6: the recording state rides the poll the host's
+    // room already makes, so the host's indicator and the
+    // start announcement are server driven like the guest's.
+    recording: recordingStateFor(booking),
     admission:
       state === 'none'
         ? null

@@ -1,4 +1,10 @@
-import { AccessToken, RoomServiceClient, TokenVerifier, TrackSource } from 'livekit-server-sdk';
+import {
+  AccessToken,
+  EgressClient,
+  RoomServiceClient,
+  TokenVerifier,
+  TrackSource,
+} from 'livekit-server-sdk';
 
 import type { LiveKitConfig } from '@/lib/config';
 
@@ -102,4 +108,18 @@ export async function verifyRoomToken(config: LiveKitConfig, jwt: string) {
 /** The server API client (room create/delete), as opposed to tokens. */
 export function roomService(config: LiveKitConfig): RoomServiceClient {
   return new RoomServiceClient(config.url, config.apiKey, config.apiSecret);
+}
+
+/**
+ * The Egress client (Epic 6), the same construction redCast's
+ * fanout adapter uses: the deployment's LiveKit URL and key
+ * pair, a short request timeout. Recording lives in
+ * lib/recording.ts; this is only the client factory, kept
+ * beside roomService so every LiveKit client in the app is
+ * built in one place.
+ */
+export function egressService(config: LiveKitConfig): EgressClient {
+  return new EgressClient(config.url, config.apiKey, config.apiSecret, {
+    requestTimeout: 10_000,
+  });
 }

@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { notFound } from '@/lib/api-gate';
 import { getDb } from '@/lib/db';
 import { logJoinFailure } from '@/lib/join-events';
+import { recordingStateFor } from '@/lib/recording';
 import { guestIdentityFor, roomClosesAt, roomOpensAt, roomPhase } from '@/lib/rooms';
 import { secretEquals } from '@/lib/session';
 import { MeetBooking } from '@/models/meet-booking';
@@ -68,5 +69,12 @@ export async function GET(
     entryMode: booking.entryMode ?? 'open',
     admissionState: booking.guestAdmissionState ?? 'none',
     removed: (booking.removedIdentities ?? []).includes(guestIdentityFor(id)),
+    // Epic 6: the recording state the in-room guest UI polls,
+    // so the recording indicator and the start announcement
+    // are driven by server state for everyone in the room,
+    // late joiners included. This is the consent surface, so
+    // it carries the state and nothing else: no object key,
+    // no Egress id, no file access of any kind (story 6.2.2).
+    recording: recordingStateFor(booking),
   });
 }

@@ -23,6 +23,7 @@ import { getDb } from '@/lib/db';
 import { logMeetingEvent } from '@/lib/join-events';
 import { logger } from '@/lib/log';
 import { resolveMeetingSettings } from '@/lib/meeting-settings';
+import { stopRecordingIfActive } from '@/lib/recording';
 import { deleteLiveKitRoom, ensureBookingRoom, guestJoinUrlFor, roomOpensAt } from '@/lib/rooms';
 import {
   MeetBooking,
@@ -421,6 +422,10 @@ export async function cancelBooking(
     room: booking.roomId,
     detail: 'booking_cancelled',
   });
+  // A cancelled meeting's recording stops with it (Epic 6);
+  // the partial file still settles onto the booking through
+  // the sweep, so the host keeps what was captured.
+  await stopRecordingIfActive(booking, 'booking_cancelled');
   await deleteLiveKitRoom(booking.roomId);
   return { booking, calendarRemoved };
 }
@@ -466,5 +471,18 @@ export function bookingJson(booking: MeetBookingDoc, type?: MeetTypeDoc) {
     extensionMinutes: resolveMeetingSettings(booking).extensionMinutes,
     extensionsAllowed: resolveMeetingSettings(booking).extensionsAllowed,
     roomExtensionsUsed: booking.roomExtensionsUsed ?? (booking.roomExtended ? 1 : 0),
+    // Recording (Epic 6): the state and, when ready, the
+    // duration and size. The playback URL is deliberately not
+    // a field here: the dashboard builds it from the booking
+    // id against the host gated recording route, and no
+    // storage reference ever appears in this JSON.
+    recording: {
+      status: booking.recordingStatus ?? 'idle',
+      startedAt: booking.recordingStartedAt ? booking.recordingStartedAt.toISOString() : null,
+      stoppedAt: booking.recordingStoppedAt ? booking.recordingStoppedAt.toISOString() : null,
+      durationSeconds: booking.recordingDurationSeconds ?? null,
+      sizeBytes: booking.recordingSizeBytes ?? null,
+      error: booking.recordingError ?? null,
+    },
   };
 }

@@ -41,7 +41,8 @@ export type MeetingEvent =
   | 'participant_left'
   | 'token_minted'
   | 'moderation'
-  | 'admission';
+  | 'admission'
+  | 'recording';
 
 export interface MeetingEventFields {
   bookingId?: string;
