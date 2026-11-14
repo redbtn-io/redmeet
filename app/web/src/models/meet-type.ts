@@ -34,6 +34,21 @@ export interface MeetTypeDoc {
    * affects future bookings.
    */
   entryMode: EntryMode;
+  /**
+   * Meeting behavior settings (Epic 5): the participant limit
+   * and the room window numbers. All optional on purpose:
+   * unset resolves to the defaults in lib/meeting-settings.ts
+   * (10 participants, opens 5 minutes before, closes 15
+   * minutes after, 30 minute extension, 1 extension), so a
+   * meeting type written before these fields existed behaves
+   * exactly as it did when the numbers were constants.
+   * Bookings copy the resolved values at booking time.
+   */
+  participantLimit?: number;
+  openLeadMinutes?: number;
+  closeLagMinutes?: number;
+  extensionMinutes?: number;
+  extensionsAllowed?: number;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -49,6 +64,11 @@ const meetTypeSchema = new Schema<MeetTypeDoc>(
     sort: { type: Number, default: 0 },
     roomProvider: { type: String, default: 'livekit' },
     entryMode: { type: String, enum: ['open', 'waiting_room'], default: 'open' },
+    participantLimit: Number,
+    openLeadMinutes: Number,
+    closeLagMinutes: Number,
+    extensionMinutes: Number,
+    extensionsAllowed: Number,
   },
   { timestamps: true },
 );

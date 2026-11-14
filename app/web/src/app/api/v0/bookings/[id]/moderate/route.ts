@@ -13,7 +13,7 @@ import {
   muteParticipantMic,
   removeParticipantFromRoom,
 } from '@/lib/moderation';
-import { LiveKitNotConfiguredError, hostIdentityFor } from '@/lib/rooms';
+import { LiveKitNotConfiguredError, LiveKitUnreachableError, hostIdentityFor } from '@/lib/rooms';
 import { MeetBooking } from '@/models/meet-booking';
 import { MeetType } from '@/models/meet-type';
 
@@ -106,6 +106,15 @@ export async function POST(
     });
   } catch (error) {
     if (error instanceof ModerationError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 409 },
+      );
+    }
+    if (error instanceof LiveKitUnreachableError) {
+      // Epic 5: the media server could not be reached. The
+      // same clean 409 shape as ModerationError, so the room
+      // UI shows words and a retry instead of a raw failure.
       return NextResponse.json(
         { error: error.message, code: error.code },
         { status: 409 },

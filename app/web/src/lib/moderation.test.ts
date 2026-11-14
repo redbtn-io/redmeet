@@ -409,4 +409,16 @@ describe.skipIf(!TEST_URI)('moderation routes (Epic 4)', () => {
     expect(openAsk.status).toBe(409);
     expect(((await openAsk.json()) as { code?: string }).code).toBe('not_waiting_room');
   });
+
+  it('mute_all with an unreachable media server answers 409 livekit_unreachable (Epic 5)', async () => {
+    // This suite points LiveKit at a dead port on purpose.
+    // Before Epic 5, mute_all was the one moderation action
+    // whose participant list call was unwrapped, so this
+    // exact call surfaced a raw 500. Now it answers the
+    // clean code, same 409 family as the single mute.
+    const booking = await makeBooking(openType, 'Mute All Guest');
+    const res = await moderate(hostJwt, String(booking._id), { action: 'mute_all' });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code?: string }).code).toBe('livekit_unreachable');
+  });
 });

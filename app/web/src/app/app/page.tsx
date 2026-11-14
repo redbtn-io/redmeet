@@ -323,6 +323,30 @@ export default function Dashboard() {
           })}
         </div>
       )}
+
+      <Card className="mt-6">
+        <div data-testid="host-runbook">
+          <h3 className="font-semibold">When a guest cannot join</h3>
+          <ol className="mt-3 list-decimal space-y-2 pl-5 text-sm text-text-secondary">
+            <li>
+              Send them the link again. Use Copy guest link on their booking above. Most join
+              problems are an old or cut off link, and a fresh copy of the same link fixes them.
+            </li>
+            <li>
+              Check the clock and the door. The room opens a few minutes before the start and
+              closes a few minutes after the end, and outside that window nobody can join. If
+              your meeting uses a waiting room, your guest also needs you to let them in from
+              the People panel inside the meeting.
+            </li>
+            <li>
+              Ask them to allow the camera and microphone when the browser asks, or to join
+              with microphone only or listen only. If it still fails, a different browser or
+              network usually settles it. Running over? Extend the room from inside the
+              meeting so nobody gets cut off.
+            </li>
+          </ol>
+        </div>
+      </Card>
     </>
   );
 }

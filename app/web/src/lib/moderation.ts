@@ -5,10 +5,12 @@ import { TrackSource } from 'livekit-server-sdk';
 import type { HydratedDocument } from 'mongoose';
 
 import { getLiveKitConfig } from '@/lib/config';
+import { logJoinFailure, logMeetingEvent } from '@/lib/join-events';
 import { roomService } from '@/lib/livekit';
 import { logger } from '@/lib/log';
 import {
   LiveKitNotConfiguredError,
+  LiveKitUnreachableError,
   RoomWindowError,
   RoomAccessError,
   deleteLiveKitRoom,
@@ -35,6 +37,19 @@ import type { MeetBookingDoc } from '@/models/meet-booking';
  * The route layer owns the session gate and the owner scope;
  * everything here assumes the caller already proved they are
  * the host who owns the booking.
+ *
+ * Error behavior (Epic 5): no moderation action surfaces a
+ * raw failure when the media server is unreachable. The
+ * actions that must ask the server first (mute, mute all)
+ * answer with the same clean 409 shape the single mute path
+ * has always had, participant_not_found when the lookup
+ * fails, livekit_unreachable when the mute itself cannot be
+ * delivered. Remove and end never depended on the server
+ * answering: the removal record and the closed booking are
+ * written first and stand either way.
+ *
+ * Every action and every admission decision is logged in the
+ * Epic 5 shape (lib/join-events.ts).
  */
 
 export type ModerationCode =
@@ -57,6 +72,10 @@ function service() {
   const config = getLiveKitConfig();
   if (!config) throw new LiveKitNotConfiguredError();
   return roomService(config);
+}
+
+function bookingIdOf(booking: Booking): string {
+  return String(booking._id);
 }
 
 /**
@@ -87,18 +106,48 @@ export async function muteParticipantMic(booking: Booking, identity: string): Pr
     throw new ModerationError('no_microphone', 'That person has no microphone on to mute');
   }
   if (mic.muted) return; // Already muted is the state the host asked for.
-  await svc.mutePublishedTrack(booking.roomId, identity, mic.sid, true);
+  try {
+    await svc.mutePublishedTrack(booking.roomId, identity, mic.sid, true);
+  } catch (error) {
+    logger.warn('moderation mutePublishedTrack failed', {
+      roomId: booking.roomId,
+      identity,
+      error: String(error),
+    });
+    throw new LiveKitUnreachableError();
+  }
+  logMeetingEvent('moderation', {
+    bookingId: bookingIdOf(booking),
+    room: booking.roomId,
+    action: 'mute',
+    identity,
+  });
 }
 
 /**
  * Mute every guest's microphone (story 4.1.3). The host's own
  * mic is theirs to run, so host identities are skipped.
  * Returns how many microphones were muted by this call.
+ *
+ * Epic 5: the participant list call is wrapped like every
+ * other moderation call now. Before this epic it was the one
+ * unwrapped call in the module, so an unreachable media
+ * server surfaced as a raw 500 from the route; now it answers
+ * the same clean 409 family as the single mute.
  */
 export async function muteAllGuests(booking: Booking): Promise<number> {
   if (!booking.roomId) return 0;
   const svc = service();
-  const participants = await svc.listParticipants(booking.roomId);
+  let participants;
+  try {
+    participants = await svc.listParticipants(booking.roomId);
+  } catch (error) {
+    logger.warn('moderation mute-all listParticipants failed', {
+      roomId: booking.roomId,
+      error: String(error),
+    });
+    throw new LiveKitUnreachableError();
+  }
   let muted = 0;
   for (const participant of participants) {
     if (participant.identity.startsWith('host-')) continue;
@@ -106,9 +155,24 @@ export async function muteAllGuests(booking: Booking): Promise<number> {
       (t) => t.source === TrackSource.MICROPHONE && !t.muted,
     );
     if (!mic) continue;
-    await svc.mutePublishedTrack(booking.roomId, participant.identity, mic.sid, true);
+    try {
+      await svc.mutePublishedTrack(booking.roomId, participant.identity, mic.sid, true);
+    } catch (error) {
+      logger.warn('moderation mute-all mutePublishedTrack failed', {
+        roomId: booking.roomId,
+        identity: participant.identity,
+        error: String(error),
+      });
+      throw new LiveKitUnreachableError();
+    }
     muted += 1;
   }
+  logMeetingEvent('moderation', {
+    bookingId: bookingIdOf(booking),
+    room: booking.roomId,
+    action: 'mute_all',
+    detail: `muted_${muted}`,
+  });
   return muted;
 }
 
@@ -131,6 +195,12 @@ export async function removeParticipantFromRoom(
     booking.removedIdentities = [...current, identity];
     await booking.save();
   }
+  logMeetingEvent('moderation', {
+    bookingId: bookingIdOf(booking),
+    room: booking.roomId,
+    action: 'remove',
+    identity,
+  });
   if (!booking.roomId) return;
   try {
     await service().removeParticipant(booking.roomId, identity);
@@ -157,6 +227,11 @@ export async function endMeeting(booking: Booking): Promise<void> {
   booking.roomStatus = 'closed';
   booking.roomEndedAt = new Date();
   await booking.save();
+  logMeetingEvent('room_closed', {
+    bookingId: bookingIdOf(booking),
+    room: booking.roomId,
+    detail: 'host_ended',
+  });
   await deleteLiveKitRoom(booking.roomId);
 }
 
@@ -191,6 +266,12 @@ export async function requestAdmission(
   booking.guestAdmissionRequestedAt = now;
   booking.guestAdmissionDecidedAt = undefined;
   await booking.save();
+  logMeetingEvent('admission', {
+    bookingId: bookingIdOf(booking),
+    room: booking.roomId,
+    role: 'guest',
+    action: 'requested',
+  });
 }
 
 /** The host lets the waiting guest in (story 4.3.3). */
@@ -201,6 +282,11 @@ export async function admitGuest(booking: Booking): Promise<void> {
   booking.guestAdmissionState = 'admitted';
   booking.guestAdmissionDecidedAt = new Date();
   await booking.save();
+  logMeetingEvent('admission', {
+    bookingId: bookingIdOf(booking),
+    room: booking.roomId,
+    action: 'admitted',
+  });
 }
 
 /** The host turns the waiting guest away (story 4.3.3). */
@@ -211,4 +297,14 @@ export async function denyGuest(booking: Booking): Promise<void> {
   booking.guestAdmissionState = 'denied';
   booking.guestAdmissionDecidedAt = new Date();
   await booking.save();
+  logMeetingEvent('admission', {
+    bookingId: bookingIdOf(booking),
+    room: booking.roomId,
+    action: 'denied',
+  });
+  logJoinFailure('admission_denied', {
+    bookingId: bookingIdOf(booking),
+    room: booking.roomId,
+    role: 'guest',
+  });
 }

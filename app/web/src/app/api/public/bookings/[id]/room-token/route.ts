@@ -2,9 +2,11 @@ import { NextResponse } from 'next/server';
 
 import { notFound } from '@/lib/api-gate';
 import { getDb } from '@/lib/db';
+import { logJoinFailure } from '@/lib/join-events';
 import {
   LiveKitNotConfiguredError,
   RoomAccessError,
+  RoomFullError,
   RoomWindowError,
   ensureBookingRoom,
   mintRoomTokenForBooking,
@@ -30,7 +32,10 @@ const OBJECT_ID_RE = /^[a-fA-F0-9]{24}$/;
  *
  * The join page that calls this is Epic 2. Errors are codes the
  * page can turn into plain words: bad_token, room_not_open,
- * room_closed, booking_cancelled.
+ * room_closed, booking_cancelled, and (Epic 5) room_full. Every
+ * refusal here and in the mint is logged in the Epic 5 failure
+ * vocabulary, so a bad link (bad_token) reads differently in
+ * the logs from a full room or a media problem.
  */
 export async function GET(
   request: Request,
@@ -44,6 +49,9 @@ export async function GET(
   const booking = await MeetBooking.findById(id);
   if (!booking) return notFound('No such booking');
   if (!presented || !booking.guestJoinToken || !secretEquals(booking.guestJoinToken, presented)) {
+    // The credential itself is never logged (the Epic 5 rule),
+    // only the fact that it did not match.
+    logJoinFailure('bad_token', { bookingId: id, role: 'guest' });
     return NextResponse.json(
       { error: 'That join link is not valid', code: 'bad_token' },
       { status: 403 },
@@ -89,6 +97,15 @@ export async function GET(
           closesAt: error.closesAt.toISOString(),
         },
         { status: error.code === 'room_not_open' ? 409 : 410 },
+      );
+    }
+    if (error instanceof RoomFullError) {
+      // Epic 5, story 5.1.3: the meeting is at its participant
+      // limit. A 409 with its own code, so the lobby shows
+      // "This meeting is full" instead of a generic failure.
+      return NextResponse.json(
+        { error: error.message, code: error.code, limit: error.limit },
+        { status: 409 },
       );
     }
     if (error instanceof LiveKitNotConfiguredError) {

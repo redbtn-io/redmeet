@@ -38,6 +38,12 @@ interface MeetingType {
   description: string;
   lengthMinutes: number;
   entryMode: 'open' | 'waiting_room';
+  /** Behavior settings (Epic 5), served resolved by the API. */
+  participantLimit: number;
+  openLeadMinutes: number;
+  closeLagMinutes: number;
+  extensionMinutes: number;
+  extensionsAllowed: number;
   active: boolean;
 }
 
@@ -90,7 +96,18 @@ export default function Settings() {
   const [types, setTypes] = useState<MeetingType[]>([]);
   const [saved, setSaved] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [draft, setDraft] = useState({ slug: '', name: '', description: '', lengthMinutes: 30, entryMode: 'open' as 'open' | 'waiting_room' });
+  const [draft, setDraft] = useState({
+    slug: '',
+    name: '',
+    description: '',
+    lengthMinutes: 30,
+    entryMode: 'open' as 'open' | 'waiting_room',
+    participantLimit: 10,
+    openLeadMinutes: 5,
+    closeLagMinutes: 15,
+    extensionMinutes: 30,
+    extensionsAllowed: 1,
+  });
 
   async function load() {
     const [me, t] = await Promise.all([
@@ -135,7 +152,18 @@ export default function Settings() {
       setError(data.error ?? 'Could not add that meeting type.');
       return;
     }
-    setDraft({ slug: '', name: '', description: '', lengthMinutes: 30, entryMode: 'open' });
+    setDraft({
+      slug: '',
+      name: '',
+      description: '',
+      lengthMinutes: 30,
+      entryMode: 'open',
+      participantLimit: 10,
+      openLeadMinutes: 5,
+      closeLagMinutes: 15,
+      extensionMinutes: 30,
+      extensionsAllowed: 1,
+    });
     await load();
   }
 
@@ -263,6 +291,7 @@ export default function Settings() {
                 <p className="truncate text-xs text-text-secondary">
                   {t.lengthMinutes} min{t.description ? `, ${t.description}` : ''}
                   {t.entryMode === 'waiting_room' ? ', waiting room' : ''}
+                  {`, up to ${t.participantLimit} people`}
                 </p>
               </div>
               <label className="flex items-center gap-2 text-xs text-text-secondary">
@@ -291,6 +320,89 @@ export default function Settings() {
               >
                 Delete
               </button>
+              <div className="flex w-full flex-wrap items-center gap-3 text-xs text-text-secondary">
+                <label className="flex items-center gap-2">
+                  People (max)
+                  <input
+                    type="number"
+                    min={2}
+                    max={50}
+                    aria-label={`Participant limit for ${t.name}`}
+                    key={`${t.id}-pl-${t.participantLimit}`}
+                    defaultValue={t.participantLimit}
+                    onBlur={(e) => {
+                      const v = Number(e.target.value);
+                      if (v !== t.participantLimit) void patchType(t.id, { participantLimit: v });
+                    }}
+                    className="w-16 rounded-lg border border-border bg-bg px-2 py-1.5 text-xs text-text-primary"
+                  />
+                </label>
+                <label className="flex items-center gap-2">
+                  Room opens (min before)
+                  <input
+                    type="number"
+                    min={0}
+                    max={180}
+                    aria-label={`Opens minutes before for ${t.name}`}
+                    key={`${t.id}-ol-${t.openLeadMinutes}`}
+                    defaultValue={t.openLeadMinutes}
+                    onBlur={(e) => {
+                      const v = Number(e.target.value);
+                      if (v !== t.openLeadMinutes) void patchType(t.id, { openLeadMinutes: v });
+                    }}
+                    className="w-16 rounded-lg border border-border bg-bg px-2 py-1.5 text-xs text-text-primary"
+                  />
+                </label>
+                <label className="flex items-center gap-2">
+                  Room closes (min after)
+                  <input
+                    type="number"
+                    min={0}
+                    max={720}
+                    aria-label={`Closes minutes after for ${t.name}`}
+                    key={`${t.id}-cl-${t.closeLagMinutes}`}
+                    defaultValue={t.closeLagMinutes}
+                    onBlur={(e) => {
+                      const v = Number(e.target.value);
+                      if (v !== t.closeLagMinutes) void patchType(t.id, { closeLagMinutes: v });
+                    }}
+                    className="w-16 rounded-lg border border-border bg-bg px-2 py-1.5 text-xs text-text-primary"
+                  />
+                </label>
+                <label className="flex items-center gap-2">
+                  Extension (min)
+                  <input
+                    type="number"
+                    min={1}
+                    max={240}
+                    aria-label={`Extension minutes for ${t.name}`}
+                    key={`${t.id}-em-${t.extensionMinutes}`}
+                    defaultValue={t.extensionMinutes}
+                    onBlur={(e) => {
+                      const v = Number(e.target.value);
+                      if (v !== t.extensionMinutes) void patchType(t.id, { extensionMinutes: v });
+                    }}
+                    className="w-16 rounded-lg border border-border bg-bg px-2 py-1.5 text-xs text-text-primary"
+                  />
+                </label>
+                <label className="flex items-center gap-2">
+                  Extensions allowed
+                  <input
+                    type="number"
+                    min={0}
+                    max={10}
+                    aria-label={`Extensions allowed for ${t.name}`}
+                    key={`${t.id}-ea-${t.extensionsAllowed}`}
+                    defaultValue={t.extensionsAllowed}
+                    onBlur={(e) => {
+                      const v = Number(e.target.value);
+                      if (v !== t.extensionsAllowed) void patchType(t.id, { extensionsAllowed: v });
+                    }}
+                    className="w-16 rounded-lg border border-border bg-bg px-2 py-1.5 text-xs text-text-primary"
+                  />
+                </label>
+                <span>These apply to new bookings. Bookings already made keep the numbers they were booked with.</span>
+              </div>
             </div>
           ))}
         </div>
@@ -335,6 +447,66 @@ export default function Settings() {
             <option value="open">Open entry</option>
             <option value="waiting_room">Waiting room</option>
           </select>
+          <label className="flex items-center gap-2 text-xs text-text-secondary">
+            People (max)
+            <input
+              className={inputCls}
+              type="number"
+              min={2}
+              max={50}
+              aria-label="Participant limit for the new meeting type"
+              value={draft.participantLimit}
+              onChange={(e) => setDraft({ ...draft, participantLimit: Number(e.target.value) })}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-text-secondary">
+            Opens (min before)
+            <input
+              className={inputCls}
+              type="number"
+              min={0}
+              max={180}
+              aria-label="Opens minutes before for the new meeting type"
+              value={draft.openLeadMinutes}
+              onChange={(e) => setDraft({ ...draft, openLeadMinutes: Number(e.target.value) })}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-text-secondary">
+            Closes (min after)
+            <input
+              className={inputCls}
+              type="number"
+              min={0}
+              max={720}
+              aria-label="Closes minutes after for the new meeting type"
+              value={draft.closeLagMinutes}
+              onChange={(e) => setDraft({ ...draft, closeLagMinutes: Number(e.target.value) })}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-text-secondary">
+            Extension (min)
+            <input
+              className={inputCls}
+              type="number"
+              min={1}
+              max={240}
+              aria-label="Extension minutes for the new meeting type"
+              value={draft.extensionMinutes}
+              onChange={(e) => setDraft({ ...draft, extensionMinutes: Number(e.target.value) })}
+            />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-text-secondary">
+            Extensions allowed
+            <input
+              className={inputCls}
+              type="number"
+              min={0}
+              max={10}
+              aria-label="Extensions allowed for the new meeting type"
+              value={draft.extensionsAllowed}
+              onChange={(e) => setDraft({ ...draft, extensionsAllowed: Number(e.target.value) })}
+            />
+          </label>
           <button type="submit" className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:brightness-110 active:scale-[0.98]">
             Add type
           </button>

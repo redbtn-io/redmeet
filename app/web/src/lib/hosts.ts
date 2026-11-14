@@ -4,6 +4,7 @@ import type { HydratedDocument } from 'mongoose';
 import { isValidSlug, normalizeAvailabilityWindows, slugify } from '@redmeet/core';
 
 import { getDb } from '@/lib/db';
+import { resolveMeetingSettings } from '@/lib/meeting-settings';
 import type { SessionUser } from '@/lib/session';
 import { MeetHost, type MeetHostDoc } from '@/models/meet-host';
 import { MeetType, type MeetTypeDoc } from '@/models/meet-type';
@@ -101,6 +102,11 @@ export function hostPrivateJson(host: MeetHostDoc) {
 }
 
 export function meetingTypeJson(type: MeetTypeDoc) {
+  // The behavior settings are served RESOLVED (Epic 5): a type
+  // that never set them reports the defaults, so the settings
+  // surface always shows the numbers a new booking will
+  // actually get instead of a blank that means "trust me".
+  const settings = resolveMeetingSettings(type);
   return {
     id: String(type._id),
     slug: type.slug,
@@ -109,6 +115,11 @@ export function meetingTypeJson(type: MeetTypeDoc) {
     lengthMinutes: type.lengthMinutes,
     active: type.active,
     entryMode: type.entryMode ?? 'open',
+    participantLimit: settings.participantLimit,
+    openLeadMinutes: settings.openLeadMinutes,
+    closeLagMinutes: settings.closeLagMinutes,
+    extensionMinutes: settings.extensionMinutes,
+    extensionsAllowed: settings.extensionsAllowed,
   };
 }
 

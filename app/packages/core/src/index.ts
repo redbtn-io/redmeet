@@ -183,6 +183,22 @@ export const meetingTypeInputSchema = z.object({
    * copy the mode at booking time.
    */
   entryMode: z.enum(['open', 'waiting_room']).default('open'),
+  /**
+   * Meeting behavior settings (Epic 5): the participant limit
+   * and the room window numbers a booking of this type runs
+   * with. All optional with no zod default on purpose: unset
+   * stays unset in storage, and the effective value resolves
+   * in exactly one place, lib/meeting-settings.ts in the web
+   * app (defaults 10 participants, opens 5 minutes before,
+   * closes 15 minutes after, 30 minute extension, 1
+   * extension). The ranges keep a typo from making a meeting
+   * unjoinable or unbounded.
+   */
+  participantLimit: z.number().int().min(2).max(50).optional(),
+  openLeadMinutes: z.number().int().min(0).max(180).optional(),
+  closeLagMinutes: z.number().int().min(0).max(720).optional(),
+  extensionMinutes: z.number().int().min(1).max(240).optional(),
+  extensionsAllowed: z.number().int().min(0).max(10).optional(),
 });
 export type MeetingTypeInput = z.infer<typeof meetingTypeInputSchema>;
 

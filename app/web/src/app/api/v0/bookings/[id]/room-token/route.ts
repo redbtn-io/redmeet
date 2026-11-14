@@ -5,6 +5,7 @@ import { getDb } from '@/lib/db';
 import { ensureHost } from '@/lib/hosts';
 import {
   LiveKitNotConfiguredError,
+  RoomFullError,
   RoomWindowError,
   ensureBookingRoom,
   mintRoomTokenForBooking,
@@ -77,6 +78,15 @@ export async function POST(
           closesAt: error.closesAt.toISOString(),
         },
         { status: error.code === 'room_not_open' ? 409 : 410 },
+      );
+    }
+    if (error instanceof RoomFullError) {
+      // Epic 5: the room is at the booking's participant
+      // limit, and the host counts as a seat too. Same code
+      // the guest route gives, so the lobby words match.
+      return NextResponse.json(
+        { error: error.message, code: error.code, limit: error.limit },
+        { status: 409 },
       );
     }
     if (error instanceof LiveKitNotConfiguredError) {

@@ -88,10 +88,26 @@ export interface MeetBookingDoc {
   roomStatus: RoomStatus;
   /** When the room fields were stamped (booking time). */
   roomCreatedAt?: Date;
-  /** When the room stops accepting joins; end + 15 minutes, plus one optional 30 minute host extension. */
+  /** When the room stops accepting joins; end plus the close lag setting, pushed later by host extensions. */
   roomExpiresAt?: Date;
   /** True once the host has used their one room extension. */
   roomExtended: boolean;
+  /**
+   * Meeting behavior settings copied from the meeting type at
+   * booking time (Epic 5), resolved through
+   * lib/meeting-settings.ts so unset means the defaults (10
+   * participants, opens 5 minutes before, closes 15 minutes
+   * after, 30 minute extension, 1 extension). Bookings written
+   * before these fields existed carry none of them and resolve
+   * to the same defaults.
+   */
+  participantLimit?: number;
+  openLeadMinutes?: number;
+  closeLagMinutes?: number;
+  extensionMinutes?: number;
+  extensionsAllowed?: number;
+  /** How many extensions the host has used on this booking (Epic 5). */
+  roomExtensionsUsed: number;
   /** Entry mode copied from the meeting type at booking time (Epic 4, feature 4.3). */
   entryMode: EntryMode;
   /**
@@ -158,6 +174,12 @@ const meetBookingSchema = new Schema<MeetBookingDoc>(
     roomCreatedAt: Date,
     roomExpiresAt: Date,
     roomExtended: { type: Boolean, default: false },
+    participantLimit: Number,
+    openLeadMinutes: Number,
+    closeLagMinutes: Number,
+    extensionMinutes: Number,
+    extensionsAllowed: Number,
+    roomExtensionsUsed: { type: Number, default: 0 },
     entryMode: { type: String, enum: ['open', 'waiting_room'], default: 'open' },
     guestAdmissionState: {
       type: String,

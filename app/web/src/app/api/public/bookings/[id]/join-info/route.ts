@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { notFound } from '@/lib/api-gate';
 import { getDb } from '@/lib/db';
+import { logJoinFailure } from '@/lib/join-events';
 import { guestIdentityFor, roomClosesAt, roomOpensAt, roomPhase } from '@/lib/rooms';
 import { secretEquals } from '@/lib/session';
 import { MeetBooking } from '@/models/meet-booking';
@@ -38,6 +39,7 @@ export async function GET(
   const booking = await MeetBooking.findById(id);
   if (!booking) return notFound('No such booking');
   if (!presented || !booking.guestJoinToken || !secretEquals(booking.guestJoinToken, presented)) {
+    logJoinFailure('bad_token', { bookingId: id, role: 'guest', detail: 'join_info' });
     return NextResponse.json(
       { error: 'That join link is not valid', code: 'bad_token' },
       { status: 403 },
