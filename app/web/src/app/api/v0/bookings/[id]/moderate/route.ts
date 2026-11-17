@@ -63,7 +63,7 @@ export async function POST(
   await getDb();
   const booking = await MeetBooking.findOne({ _id: id, hostId: host._id });
   if (!booking) return notFound('No such booking');
-  const type = await MeetType.findById(booking.meetTypeId);
+  const type = booking.meetTypeId ? await MeetType.findById(booking.meetTypeId) : null;
 
   try {
     let mutedCount: number | undefined;
@@ -90,11 +90,20 @@ export async function POST(
         break;
       }
       case 'admit': {
-        await admitGuest(booking);
+        // Instant meetings (Epic 8) admit one guest by their
+        // identity; booked meetings have the one guest and
+        // need none.
+        if (booking.kind === 'instant' && !identity) {
+          return badRequest('Admit needs the waiting guest identity');
+        }
+        await admitGuest(booking, booking.kind === 'instant' ? identity : undefined);
         break;
       }
       case 'deny': {
-        await denyGuest(booking);
+        if (booking.kind === 'instant' && !identity) {
+          return badRequest('Deny needs the waiting guest identity');
+        }
+        await denyGuest(booking, booking.kind === 'instant' ? identity : undefined);
         break;
       }
     }

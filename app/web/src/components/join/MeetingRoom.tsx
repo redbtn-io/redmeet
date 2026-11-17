@@ -10,6 +10,7 @@ import {
   type Room,
 } from 'livekit-client';
 import {
+  Link2,
   Mic,
   MicOff,
   MonitorUp,
@@ -85,6 +86,12 @@ export interface MeetingRoomProps {
    * whose poll is the session gated waiting endpoint.
    */
   guestToken: string | null;
+  /**
+   * The share link for an instant meeting (Epic 8): the host
+   * gets an Invite button in the room that copies it. Null for
+   * booked meetings and for guests.
+   */
+  inviteUrl?: string | null;
   meetingName: string;
   hostName: string;
   initialDevices: DeviceMemory;
@@ -181,7 +188,14 @@ export function MeetingRoom(props: MeetingRoomProps) {
   const [confirmMuteAll, setConfirmMuteAll] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [confirmRemoveId, setConfirmRemoveId] = useState<string | null>(null);
-  const [waitingGuest, setWaitingGuest] = useState<{ name: string } | null>(null);
+  // Who is waiting to be let in. A booked meeting has at most
+  // one (identity null: the decision needs none); an instant
+  // meeting (Epic 8) can have several, each decided by their
+  // own identity.
+  const [waitingGuests, setWaitingGuests] = useState<
+    { identity: string | null; name: string }[]
+  >([]);
+  const [inviteCopied, setInviteCopied] = useState(false);
   // Epic 6 recording: the state is the SERVER's (polled from
   // the booking), never this client's guess, so every
   // participant's indicator agrees and a late joiner sees
@@ -616,8 +630,10 @@ export function MeetingRoom(props: MeetingRoomProps) {
   );
 
   // The host's waiting room view (feature 4.3): poll the host
-  // gated waiting endpoint while in the room. One guest per
-  // booking means at most one name here. Epic 6: the same
+  // gated waiting endpoint while in the room. A booked meeting
+  // carries the one guest in `admission`; an instant meeting
+  // (Epic 8) carries every waiting guest in `admissions`, each
+  // with the identity their decision needs. Epic 6: the same
   // poll carries the recording state for the host's room.
   useEffect(() => {
     if (!props.isHost) return;
@@ -628,12 +644,20 @@ export function MeetingRoom(props: MeetingRoomProps) {
         if (!res.ok) return;
         const data = (await res.json()) as {
           admission?: { state: string; name: string } | null;
+          admissions?: { identity: string; name: string; state: string }[];
           recording?: { status: string; startedAt: string | null };
         };
         if (cancelled) return;
-        setWaitingGuest(
-          data.admission?.state === 'waiting' ? { name: data.admission.name } : null,
-        );
+        const fromList = (data.admissions ?? [])
+          .filter((a) => a.state === 'waiting')
+          .map((a) => ({ identity: a.identity as string | null, name: a.name }));
+        if (fromList.length > 0) {
+          setWaitingGuests(fromList);
+        } else if (data.admission?.state === 'waiting') {
+          setWaitingGuests([{ identity: null, name: data.admission.name }]);
+        } else {
+          setWaitingGuests([]);
+        }
         if (data.recording) applyRecordingState(data.recording);
       } catch {
         // Polling is best effort; the next round retries.
@@ -951,50 +975,56 @@ export function MeetingRoom(props: MeetingRoomProps) {
         </div>
       )}
 
-      {props.isHost && waitingGuest && (
-        <div
-          className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2"
-          data-testid="waiting-panel"
-          role="status"
-        >
-          <p className="text-sm text-text-secondary">
-            <span className="font-medium text-text-primary">{waitingGuest.name}</span>{' '}
-            is waiting to join
-          </p>
-          <button
-            type="button"
-            data-testid="admit-button"
-            onClick={() => {
-              void (async () => {
-                const data = await moderate('admit');
-                if (data) {
-                  setWaitingGuest(null);
-                  pushToast('Guest admitted');
-                }
-              })();
-            }}
-            className="rounded-lg bg-[var(--primary-color)] px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90"
+      {props.isHost &&
+        waitingGuests.map((waiting) => (
+          <div
+            key={waiting.identity ?? 'the-guest'}
+            className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2"
+            data-testid="waiting-panel"
+            role="status"
           >
-            Let them in
-          </button>
-          <button
-            type="button"
-            data-testid="deny-button"
-            onClick={() => {
-              void (async () => {
-                const data = await moderate('deny');
-                if (data) {
-                  setWaitingGuest(null);
-                  pushToast('Guest denied');
-                }
-              })();
-            }}
-            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition hover:text-text-primary"
-          >
-            Deny
-          </button>
-        </div>
-      )}
+            <p className="text-sm text-text-secondary">
+              <span className="font-medium text-text-primary">{waiting.name}</span>{' '}
+              is waiting to join
+            </p>
+            <button
+              type="button"
+              data-testid="admit-button"
+              onClick={() => {
+                void (async () => {
+                  const data = await moderate('admit', waiting.identity ?? undefined);
+                  if (data) {
+                    setWaitingGuests((list) =>
+                      list.filter((w) => w.identity !== waiting.identity),
+                    );
+                    pushToast('Guest admitted');
+                  }
+                })();
+              }}
+              className="rounded-lg bg-[var(--primary-color)] px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90"
+            >
+              Let them in
+            </button>
+            <button
+              type="button"
+              data-testid="deny-button"
+              onClick={() => {
+                void (async () => {
+                  const data = await moderate('deny', waiting.identity ?? undefined);
+                  if (data) {
+                    setWaitingGuests((list) =>
+                      list.filter((w) => w.identity !== waiting.identity),
+                    );
+                    pushToast('Guest denied');
+                  }
+                })();
+              }}
+              className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition hover:text-text-primary"
+            >
+              Deny
+            </button>
+          </div>
+        ))}
 
       {toasts.length > 0 && (
         <div className="mt-4 space-y-2" aria-live="polite">
@@ -1183,6 +1213,28 @@ export function MeetingRoom(props: MeetingRoomProps) {
           <Users className="h-4 w-4" aria-hidden />
           People ({tiles.length})
         </button>
+
+        {props.isHost && props.inviteUrl && (
+          <button
+            type="button"
+            data-testid="invite-button"
+            aria-label="Copy the invite link for this meeting"
+            onClick={() => {
+              void navigator.clipboard
+                .writeText(props.inviteUrl ?? '')
+                .then(() => {
+                  setInviteCopied(true);
+                  pushToast('Invite link copied');
+                  setTimeout(() => setInviteCopied(false), 2000);
+                })
+                .catch(() => pushToast('Could not copy the invite link'));
+            }}
+            className="flex items-center gap-2 rounded-lg bg-black/40 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-black/60"
+          >
+            <Link2 className="h-4 w-4" aria-hidden />
+            {inviteCopied ? 'Copied' : 'Invite'}
+          </button>
+        )}
 
         {props.isHost && !confirmMuteAll && (
           <button

@@ -136,6 +136,46 @@ export function guestIdentityFor(bookingId: string): string {
   return `guest-${bookingId}`;
 }
 
+/**
+ * Instant meetings (Epic 8): the share link is the credential
+ * and it admits many guests, so one identity per booking is no
+ * longer enough. Each guest carries their own guest key, a UUID
+ * their browser generates once and keeps in local storage for
+ * the meeting, and their identity is the booking id plus that
+ * key. A dropped guest rejoins as themselves (same key, same
+ * identity, same seat), a second tab is the same guest, and a
+ * different person on the same link is a different seat. The
+ * key is an identity handle, not a secret: the link token is
+ * still what authorizes the mint, and removal is enforced
+ * against the identity the key produces.
+ */
+export function instantGuestIdentityFor(bookingId: string, guestKey: string): string {
+  return `guest-${bookingId}-${guestKey}`;
+}
+
+const GUEST_KEY_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** A guest key is a UUID the guest's browser generated. */
+export function isValidGuestKey(value: unknown): value is string {
+  return typeof value === 'string' && GUEST_KEY_RE.test(value);
+}
+
+/**
+ * An instant meeting guest mint arrived without a usable guest
+ * key. Without the key there is no per guest identity, and
+ * minting anyway would hand the guest a fresh identity on
+ * every call, which would quietly defeat removal. The lobby
+ * always sends one; this refusal is for calls that do not.
+ */
+export class GuestKeyError extends Error {
+  readonly code = 'guest_key_required';
+  constructor() {
+    super('This invite link needs a guest key to join');
+    this.name = 'GuestKeyError';
+  }
+}
+
 export type RoomAccessCode = 'guest_removed' | 'admission_required';
 
 /**
@@ -379,7 +419,7 @@ function isRoomNotFoundError(error: unknown): boolean {
 export async function mintRoomTokenForBooking(
   booking: HydratedDocument<MeetBookingDoc>,
   role: RoomRole,
-  opts: { displayName: string; now?: Date },
+  opts: { displayName: string; now?: Date; guestKey?: string },
 ): Promise<RoomTokenResult> {
   const bookingId = String(booking._id);
   const config = getLiveKitConfig();
@@ -412,6 +452,25 @@ export async function mintRoomTokenForBooking(
     );
   }
 
+  // The identity comes first now (Epic 8): on an instant
+  // meeting each guest has their own, derived from their guest
+  // key, and every gate below is about THAT guest. On a booked
+  // meeting the identity is the booking's one guest identity,
+  // exactly as before.
+  const isInstant = booking.kind === 'instant';
+  let identity: string;
+  if (role === 'host') {
+    identity = hostIdentityFor(String(booking.hostId));
+  } else if (isInstant) {
+    if (!isValidGuestKey(opts.guestKey)) {
+      logJoinFailure('bad_token', { bookingId, room: booking.roomId, role, detail: 'guest_key' });
+      throw new GuestKeyError();
+    }
+    identity = instantGuestIdentityFor(bookingId, opts.guestKey);
+  } else {
+    identity = guestIdentityFor(bookingId);
+  }
+
   // Epic 4 guest gates, checked after the window so the answer
   // order stays time first, access second. A removed guest is
   // refused for good: their identity is on the booking's
@@ -419,33 +478,32 @@ export async function mintRoomTokenForBooking(
   // from a guest who merely dropped (a drop leaves no record
   // and mints again with the same link). A waiting room guest
   // is refused until the host admits them, so no publishing
-  // token exists before admission, ever.
+  // token exists before admission, ever. On an instant meeting
+  // both gates read the caller's own admission entry, so one
+  // guest's removal or denial never touches another guest on
+  // the same link.
   if (role === 'guest') {
-    if ((booking.removedIdentities ?? []).includes(guestIdentityFor(bookingId))) {
-      logJoinFailure('removed', { bookingId, room: booking.roomId, role });
+    if ((booking.removedIdentities ?? []).includes(identity)) {
+      logJoinFailure('removed', { bookingId, room: booking.roomId, role, identity });
       throw new RoomAccessError('guest_removed');
     }
-    if (
-      booking.entryMode === 'waiting_room' &&
-      booking.guestAdmissionState !== 'admitted'
-    ) {
-      logJoinFailure(
-        booking.guestAdmissionState === 'denied' ? 'admission_denied' : 'admission_pending',
-        {
+    if (booking.entryMode === 'waiting_room') {
+      const admissionState = isInstant
+        ? ((booking.guestAdmissions ?? []).find((a) => a.identity === identity)?.state ??
+          'none')
+        : booking.guestAdmissionState;
+      if (admissionState !== 'admitted') {
+        logJoinFailure(admissionState === 'denied' ? 'admission_denied' : 'admission_pending', {
           bookingId,
           room: booking.roomId,
           role,
-          detail: booking.guestAdmissionState ?? 'none',
-        },
-      );
-      throw new RoomAccessError('admission_required');
+          identity,
+          detail: admissionState ?? 'none',
+        });
+        throw new RoomAccessError('admission_required');
+      }
     }
   }
-
-  const identity =
-    role === 'host'
-      ? hostIdentityFor(String(booking.hostId))
-      : guestIdentityFor(bookingId);
 
   // The participant limit as product behavior (story 5.1.3):
   // count the real participants on the media server and refuse

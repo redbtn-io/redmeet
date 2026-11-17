@@ -251,6 +251,7 @@ export async function requestAdmission(
   booking: Booking,
   name: string,
   now: Date = new Date(),
+  identity?: string,
 ): Promise<void> {
   if (booking.entryMode !== 'waiting_room') {
     throw new ModerationError('not_waiting_room', 'This meeting does not use a waiting room');
@@ -262,6 +263,40 @@ export async function requestAdmission(
       roomOpensAt(booking),
       roomClosesAt(booking),
     );
+  }
+  // Instant meetings (Epic 8) track admission per guest: the
+  // caller passes the asking guest's own identity, and the ask,
+  // the removal check, and the host's decision all land on that
+  // guest's entry only. Booked meetings keep the single guest
+  // fields and never pass an identity.
+  if (booking.kind === 'instant') {
+    if (!identity) {
+      throw new ModerationError('guest_not_waiting', 'This guest has not asked to join');
+    }
+    if ((booking.removedIdentities ?? []).includes(identity)) {
+      throw new RoomAccessError('guest_removed');
+    }
+    const cleanName = name.trim().slice(0, 120);
+    const entries = booking.guestAdmissions ?? [];
+    const existing = entries.find((a) => a.identity === identity);
+    if (existing) {
+      existing.state = 'waiting';
+      existing.name = cleanName || existing.name;
+      existing.requestedAt = now;
+      existing.decidedAt = undefined;
+    } else {
+      entries.push({ identity, name: cleanName, state: 'waiting', requestedAt: now });
+    }
+    booking.guestAdmissions = entries;
+    await booking.save();
+    logMeetingEvent('admission', {
+      bookingId: bookingIdOf(booking),
+      room: booking.roomId,
+      role: 'guest',
+      identity,
+      action: 'requested',
+    });
+    return;
   }
   if ((booking.removedIdentities ?? []).includes(guestIdentityFor(String(booking._id)))) {
     throw new RoomAccessError('guest_removed');
@@ -280,7 +315,23 @@ export async function requestAdmission(
 }
 
 /** The host lets the waiting guest in (story 4.3.3). */
-export async function admitGuest(booking: Booking): Promise<void> {
+export async function admitGuest(booking: Booking, identity?: string): Promise<void> {
+  if (booking.kind === 'instant') {
+    const entry = (booking.guestAdmissions ?? []).find((a) => a.identity === identity);
+    if (!entry || entry.state !== 'waiting') {
+      throw new ModerationError('guest_not_waiting', 'That guest is not waiting to be let in');
+    }
+    entry.state = 'admitted';
+    entry.decidedAt = new Date();
+    await booking.save();
+    logMeetingEvent('admission', {
+      bookingId: bookingIdOf(booking),
+      room: booking.roomId,
+      identity,
+      action: 'admitted',
+    });
+    return;
+  }
   if (booking.guestAdmissionState !== 'waiting') {
     throw new ModerationError('guest_not_waiting', 'No guest is waiting to be let in');
   }
@@ -295,7 +346,29 @@ export async function admitGuest(booking: Booking): Promise<void> {
 }
 
 /** The host turns the waiting guest away (story 4.3.3). */
-export async function denyGuest(booking: Booking): Promise<void> {
+export async function denyGuest(booking: Booking, identity?: string): Promise<void> {
+  if (booking.kind === 'instant') {
+    const entry = (booking.guestAdmissions ?? []).find((a) => a.identity === identity);
+    if (!entry || entry.state !== 'waiting') {
+      throw new ModerationError('guest_not_waiting', 'That guest is not waiting to be let in');
+    }
+    entry.state = 'denied';
+    entry.decidedAt = new Date();
+    await booking.save();
+    logMeetingEvent('admission', {
+      bookingId: bookingIdOf(booking),
+      room: booking.roomId,
+      identity,
+      action: 'denied',
+    });
+    logJoinFailure('admission_denied', {
+      bookingId: bookingIdOf(booking),
+      room: booking.roomId,
+      role: 'guest',
+      identity,
+    });
+    return;
+  }
   if (booking.guestAdmissionState !== 'waiting') {
     throw new ModerationError('guest_not_waiting', 'No guest is waiting to be let in');
   }

@@ -28,7 +28,7 @@ export async function POST(
   await getDb();
   const booking = await MeetBooking.findOne({ _id: id, hostId: host._id });
   if (!booking) return notFound('No such booking');
-  const type = await MeetType.findById(booking.meetTypeId);
+  const type = booking.meetTypeId ? await MeetType.findById(booking.meetTypeId) : null;
 
   try {
     await ensureBookingRoom(booking, type ?? undefined);

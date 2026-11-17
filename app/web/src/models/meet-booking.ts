@@ -21,7 +21,25 @@ import type { EntryMode } from '@/models/meet-type';
  * with an upsert keyed on that index (see lib/bookings.ts), so two
  * concurrent requests for the same slot cannot both pass.
  */
-export type BookingStatus = 'pending_calendar' | 'confirmed' | 'calendar_failed' | 'cancelled';
+export type BookingStatus =
+  | 'pending_calendar'
+  | 'confirmed'
+  | 'calendar_failed'
+  | 'cancelled'
+  | 'instant';
+
+/**
+ * Which kind of meeting a record is (Epic 8). `booked` is the
+ * original shape: one guest books a slot through a public link
+ * and a calendar invite goes out. `instant` is a meeting the
+ * host spins up on demand: no slot, no calendar event, no named
+ * guest, and the guest link is a share link that admits many
+ * guests at once. The status carries `instant` too, which is
+ * what keeps instant records out of the slot index, the
+ * availability math, and the calendar reconciliation sweep:
+ * none of those key off anything but the slot holding statuses.
+ */
+export type MeetingKind = 'booked' | 'instant';
 
 /**
  * Room lifecycle (Epic 1). `not_created` is stamped with the room
@@ -60,10 +78,37 @@ export const SLOT_HOLDING_STATUSES: BookingStatus[] = [
   'calendar_failed',
 ];
 
+/**
+ * One guest's waiting room admission on an INSTANT meeting
+ * (Epic 8). A booked meeting has exactly one guest, so its
+ * admission lives in the flat guestAdmission fields below. An
+ * instant meeting's share link admits many guests, each with
+ * their own identity, so admission is per guest: one entry per
+ * guest identity that has asked. Only meaningful when the
+ * record kind is 'instant' and entryMode is 'waiting_room'.
+ */
+export interface GuestAdmissionEntry {
+  /** The guest's LiveKit identity, guest-<bookingId>-<guestKey>. */
+  identity: string;
+  /** The name the guest asked to join under (their lobby name). */
+  name: string;
+  state: GuestAdmissionState;
+  requestedAt?: Date;
+  decidedAt?: Date;
+}
+
 export interface MeetBookingDoc {
   _id: Types.ObjectId;
   hostId: Types.ObjectId;
-  meetTypeId: Types.ObjectId;
+  /**
+   * Booked or instant (Epic 8). Records written before the
+   * field existed have no kind and are booked meetings.
+   */
+  kind?: MeetingKind;
+  /** The meeting type the booking came from. Instant meetings have none. */
+  meetTypeId?: Types.ObjectId;
+  /** Host given title for an instant meeting. Booked meetings take the type's name. */
+  title?: string;
   guestName: string;
   guestEmail: string;
   guestPhone: string;
@@ -135,6 +180,8 @@ export interface MeetBookingDoc {
   guestAdmissionName: string;
   guestAdmissionRequestedAt?: Date;
   guestAdmissionDecidedAt?: Date;
+  /** Per guest admission entries, instant meetings only (Epic 8). */
+  guestAdmissions: GuestAdmissionEntry[];
   /**
    * LiveKit identities the host removed from this booking's
    * room (Epic 4, feature 4.2). The mint checks this list,
@@ -175,16 +222,24 @@ export interface MeetBookingDoc {
 const meetBookingSchema = new Schema<MeetBookingDoc>(
   {
     hostId: { type: Schema.Types.ObjectId, ref: 'MeetHost', required: true, index: true },
-    meetTypeId: { type: Schema.Types.ObjectId, ref: 'MeetType', required: true, index: true },
-    guestName: { type: String, required: true },
-    guestEmail: { type: String, required: true },
+    kind: { type: String, enum: ['booked', 'instant'], default: 'booked', index: true },
+    // A meeting type id is required for booked meetings by the
+    // booking flow itself; instant meetings (Epic 8) have none,
+    // so the schema cannot demand one. Same for the guest name
+    // and email: a booked guest always supplies both through the
+    // validated booking form, an instant meeting has no guest
+    // until someone opens the share link.
+    meetTypeId: { type: Schema.Types.ObjectId, ref: 'MeetType', index: true },
+    title: { type: String, default: '' },
+    guestName: { type: String, default: '' },
+    guestEmail: { type: String, default: '' },
     guestPhone: { type: String, default: '' },
     comments: { type: String, default: '' },
     start: { type: Date, required: true },
     end: { type: Date, required: true },
     status: {
       type: String,
-      enum: ['pending_calendar', 'confirmed', 'calendar_failed', 'cancelled'],
+      enum: ['pending_calendar', 'confirmed', 'calendar_failed', 'cancelled', 'instant'],
       required: true,
       default: 'pending_calendar',
     },
@@ -223,6 +278,25 @@ const meetBookingSchema = new Schema<MeetBookingDoc>(
     guestAdmissionName: { type: String, default: '' },
     guestAdmissionRequestedAt: Date,
     guestAdmissionDecidedAt: Date,
+    guestAdmissions: {
+      type: [
+        new Schema<GuestAdmissionEntry>(
+          {
+            identity: { type: String, required: true },
+            name: { type: String, default: '' },
+            state: {
+              type: String,
+              enum: ['none', 'waiting', 'admitted', 'denied'],
+              default: 'none',
+            },
+            requestedAt: Date,
+            decidedAt: Date,
+          },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
     removedIdentities: { type: [String], default: [] },
     roomEndedAt: Date,
     recordingStatus: {

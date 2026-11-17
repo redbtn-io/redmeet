@@ -36,6 +36,15 @@ export interface MeetingSettings {
   extensionMinutes: number;
   /** How many extensions the host may use on one booking. */
   extensionsAllowed: number;
+  /**
+   * Instant meetings (Epic 8): how long an instant meeting
+   * stays open from the moment the host starts it. Instant
+   * meetings have no meeting type to carry settings, so this
+   * resolves from the defaults here and is stamped onto the
+   * record at creation as its window (the host extension can
+   * still push the close later, like any meeting).
+   */
+  instantLifetimeMinutes: number;
 }
 
 /** The defaults, today's behavior, in the one place they live. */
@@ -45,6 +54,7 @@ export const MEETING_SETTING_DEFAULTS: MeetingSettings = {
   closeLagMinutes: 15,
   extensionMinutes: 30,
   extensionsAllowed: 1,
+  instantLifetimeMinutes: 240,
 };
 
 /** Anything that can carry the settings fields: a meeting type or a booking. */
@@ -80,6 +90,10 @@ export function resolveMeetingSettings(source: MeetingSettingsSource): MeetingSe
     extensionsAllowed: pickCount(
       source?.extensionsAllowed,
       MEETING_SETTING_DEFAULTS.extensionsAllowed,
+    ),
+    instantLifetimeMinutes: pickInt(
+      source?.instantLifetimeMinutes,
+      MEETING_SETTING_DEFAULTS.instantLifetimeMinutes,
     ),
   };
 }

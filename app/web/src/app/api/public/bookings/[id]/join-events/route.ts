@@ -7,7 +7,12 @@ import {
   logJoinFailure,
   logMeetingEvent,
 } from '@/lib/join-events';
-import { guestIdentityFor, hostIdentityFor } from '@/lib/rooms';
+import {
+  guestIdentityFor,
+  hostIdentityFor,
+  instantGuestIdentityFor,
+  isValidGuestKey,
+} from '@/lib/rooms';
 import { resolveSession, secretEquals } from '@/lib/session';
 import { MeetBooking } from '@/models/meet-booking';
 import { MeetHost } from '@/models/meet-host';
@@ -49,7 +54,7 @@ export async function POST(
   const { id } = await params;
   if (!OBJECT_ID_RE.test(id)) return notFound('No such booking');
 
-  let body: { t?: unknown; kind?: unknown; failureType?: unknown };
+  let body: { t?: unknown; kind?: unknown; failureType?: unknown; g?: unknown };
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -93,8 +98,15 @@ export async function POST(
     );
   }
 
+  // Instant meetings (Epic 8): the guest's own identity comes
+  // from their guest key, so their joined and left lines name
+  // the guest who actually came and went.
   const identity =
-    role === 'host' ? hostIdentityFor(String(booking.hostId)) : guestIdentityFor(id);
+    role === 'host'
+      ? hostIdentityFor(String(booking.hostId))
+      : booking.kind === 'instant' && isValidGuestKey(body.g)
+        ? instantGuestIdentityFor(id, body.g)
+        : guestIdentityFor(id);
   const fields = { bookingId: id, room: booking.roomId, role, identity };
   if (kind === 'joined') {
     logMeetingEvent('participant_joined', fields);

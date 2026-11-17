@@ -10,7 +10,13 @@ import { JoinLobby } from '@/components/join/JoinLobby';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { getDb } from '@/lib/db';
 import { logJoinFailure } from '@/lib/join-events';
-import { guestIdentityFor, roomClosesAt, roomOpensAt, roomPhase } from '@/lib/rooms';
+import {
+  guestIdentityFor,
+  guestJoinUrlFor,
+  roomClosesAt,
+  roomOpensAt,
+  roomPhase,
+} from '@/lib/rooms';
 import { resolveSession, secretEquals } from '@/lib/session';
 import { MeetBooking } from '@/models/meet-booking';
 import { MeetHost } from '@/models/meet-host';
@@ -95,8 +101,12 @@ export default async function JoinPage({
   const booking = await MeetBooking.findById(id);
   if (!booking) notFound();
   const host = await MeetHost.findById(booking.hostId);
-  const type = await MeetType.findById(booking.meetTypeId);
-  if (!host || !type) notFound();
+  const type = booking.meetTypeId ? await MeetType.findById(booking.meetTypeId) : null;
+  // A booked meeting without its type is a broken record. An
+  // instant meeting (Epic 8) has no type by design; the name
+  // the page shows is the title the host gave it.
+  if (!host || (!type && booking.kind !== 'instant')) notFound();
+  const meetingName = type?.name ?? (booking.title || 'Instant meeting');
 
   // Host mode: the session, not the query string, decides.
   let hostMode = false;
@@ -125,7 +135,11 @@ export default async function JoinPage({
         <Shell color={host.color}>
           <Message
             title="That join link is not valid"
-            body="This link does not match this meeting's invite. Use the exact link from your calendar invite or your booking confirmation page. If you copied it by hand, check nothing was cut off."
+            body={
+              booking.kind === 'instant'
+                ? "This link does not match this meeting's invite. Use the exact link the host sent you. If you copied it by hand, check nothing was cut off."
+                : "This link does not match this meeting's invite. Use the exact link from your calendar invite or your booking confirmation page. If you copied it by hand, check nothing was cut off."
+            }
           />
         </Shell>
       );
@@ -134,9 +148,13 @@ export default async function JoinPage({
 
   // A removed guest (Epic 4) is told so at the door: their
   // link is dead for this meeting no matter what the clock
-  // says, and the mint would refuse them anyway.
+  // says, and the mint would refuse them anyway. On an instant
+  // meeting removal is per guest and the page cannot know the
+  // caller's guest key (it lives in their browser), so the
+  // lobby checks it through join-info instead.
   if (
     !hostMode &&
+    booking.kind !== 'instant' &&
     (booking.removedIdentities ?? []).includes(guestIdentityFor(id))
   ) {
     return (
@@ -155,7 +173,7 @@ export default async function JoinPage({
       <Shell color={host.color}>
         <Message
           title="This meeting was cancelled"
-          body={`${type.name} with ${host.displayName} was cancelled, so there is no room to join. If that is a surprise, reply to your calendar invite and ask the host.`}
+          body={`${meetingName} with ${host.displayName} was cancelled, so there is no room to join. If that is a surprise, reply to your calendar invite and ask the host.`}
         />
       </Shell>
     );
@@ -192,7 +210,7 @@ export default async function JoinPage({
         bookingId={String(booking._id)}
         mode={hostMode ? 'host' : 'guest'}
         guestToken={hostMode ? null : (t ?? null)}
-        meetingName={type.name}
+        meetingName={meetingName}
         hostName={host.displayName}
         initialName={hostMode ? host.displayName : booking.guestName}
         dateLabel={dateLabel}
@@ -200,6 +218,10 @@ export default async function JoinPage({
         opensAt={roomOpensAt(booking).toISOString()}
         closesAt={roomClosesAt(booking).toISOString()}
         entryMode={booking.entryMode ?? 'open'}
+        kind={booking.kind ?? 'booked'}
+        inviteUrl={
+          hostMode && booking.kind === 'instant' ? guestJoinUrlFor(booking) : null
+        }
       />
     </Shell>
   );

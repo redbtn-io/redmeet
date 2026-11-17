@@ -27,7 +27,7 @@ export async function POST(
   const booking = await MeetBooking.findOne({ _id: id, hostId: host._id });
   if (!booking) return notFound('No such booking');
   const { calendarRemoved } = await cancelBooking(host, booking);
-  const type = await MeetType.findById(booking.meetTypeId);
+  const type = booking.meetTypeId ? await MeetType.findById(booking.meetTypeId) : null;
   return NextResponse.json({
     booking: bookingJson(booking, type ?? undefined),
     calendarRemoved,

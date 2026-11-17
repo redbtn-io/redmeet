@@ -69,6 +69,14 @@ export interface JoinLobbyProps {
   closesAt: string;
   /** Entry mode carried on the booking (Epic 4, feature 4.3). */
   entryMode: 'open' | 'waiting_room';
+  /** Booked or instant (Epic 8). Defaults to booked. */
+  kind?: 'booked' | 'instant';
+  /**
+   * The share link for an instant meeting, shown to the host
+   * in the lobby and carried into the room (Epic 8). Null for
+   * guests and for booked meetings.
+   */
+  inviteUrl?: string | null;
 }
 
 type Screen = 'lobby' | 'connecting' | 'inroom' | 'left' | 'gone' | 'failed' | 'removed';
@@ -90,6 +98,36 @@ function timeLabel(iso: string): string {
 export function JoinLobby(props: JoinLobbyProps) {
   const { bookingId, mode, guestToken, opensAt, closesAt } = props;
   const waitingRoom = mode === 'guest' && props.entryMode === 'waiting_room';
+  const isInstant = props.kind === 'instant';
+  const [inviteCopied, setInviteCopied] = useState(false);
+
+  /**
+   * The guest key (Epic 8): on an instant meeting the link is
+   * shared, so THIS guest is identified by a key their browser
+   * makes once and keeps in local storage for the meeting. It
+   * rides on every guest call (join-info, waiting room, the
+   * mint, event reports), which is what makes a dropped guest
+   * rejoin as themselves while a different person on the same
+   * link takes a different seat.
+   */
+  const guestKeyRef = useRef<string | null>(null);
+  const guestKey = useCallback((): string | null => {
+    if (!isInstant || mode !== 'guest') return null;
+    if (guestKeyRef.current) return guestKeyRef.current;
+    const storageKey = `redmeet.guestKey.${bookingId}`;
+    let key: string | null = null;
+    try {
+      key = window.localStorage.getItem(storageKey);
+      if (!key) {
+        key = window.crypto.randomUUID();
+        window.localStorage.setItem(storageKey, key);
+      }
+    } catch {
+      key = key ?? window.crypto.randomUUID();
+    }
+    guestKeyRef.current = key;
+    return key;
+  }, [isInstant, mode, bookingId]);
 
   const [screen, setScreen] = useState<Screen>('lobby');
   const [goneMessage, setGoneMessage] = useState('');
@@ -141,6 +179,7 @@ export function JoinLobby(props: JoinLobbyProps) {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         ...(guestToken ? { t: guestToken } : {}),
+        ...(guestKey() ? { g: guestKey() } : {}),
         kind,
         ...(failureType ? { failureType } : {}),
       }),
@@ -297,20 +336,25 @@ export function JoinLobby(props: JoinLobbyProps) {
   const fetchJoinInfo = useCallback(async (): Promise<JoinInfo | null> => {
     if (mode !== 'guest' || !guestToken) return null;
     try {
+      const key = guestKey();
       const res = await fetch(
-        `/api/public/bookings/${bookingId}/join-info?t=${encodeURIComponent(guestToken)}`,
+        `/api/public/bookings/${bookingId}/join-info?t=${encodeURIComponent(guestToken)}${key ? `&g=${encodeURIComponent(key)}` : ''}`,
       );
       if (!res.ok) return null;
       return (await res.json()) as JoinInfo;
     } catch {
       return null;
     }
-  }, [bookingId, guestToken, mode]);
+  }, [bookingId, guestToken, mode, guestKey]);
 
   // A waiting room guest who reloads after being admitted
-  // should find the Join button waiting, not a fresh ask.
+  // should find the Join button waiting, not a fresh ask. An
+  // instant meeting guest (Epic 8) checks on load in either
+  // entry mode: removal is per guest there and only join-info
+  // can tell this guest the host removed them.
+  const checkInfoOnLoad = waitingRoom || (isInstant && mode === 'guest');
   useEffect(() => {
-    if (!waitingRoom || screen !== 'lobby') return;
+    if (!checkInfoOnLoad || screen !== 'lobby') return;
     let cancelled = false;
     void (async () => {
       const info = await fetchJoinInfo();
@@ -324,7 +368,7 @@ export function JoinLobby(props: JoinLobbyProps) {
     return () => {
       cancelled = true;
     };
-  }, [waitingRoom, screen, fetchJoinInfo]);
+  }, [checkInfoOnLoad, screen, fetchJoinInfo]);
 
   // While the guest waits, poll for the host's decision. The
   // wait always resolves into words: admitted, denied,
@@ -357,8 +401,9 @@ export function JoinLobby(props: JoinLobbyProps) {
     setAdmissionBusy(true);
     setJoinError(null);
     try {
+      const key = guestKey();
       const res = await fetch(
-        `/api/public/bookings/${bookingId}/waiting-room?t=${encodeURIComponent(guestToken ?? '')}`,
+        `/api/public/bookings/${bookingId}/waiting-room?t=${encodeURIComponent(guestToken ?? '')}${key ? `&g=${encodeURIComponent(key)}` : ''}`,
         {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
@@ -415,8 +460,9 @@ export function JoinLobby(props: JoinLobbyProps) {
       }
       return { token: data.token, url: data.url };
     }
+    const key = guestKey();
     const res = await fetch(
-      `/api/public/bookings/${bookingId}/room-token?t=${encodeURIComponent(guestToken ?? '')}&name=${encodeURIComponent(name.trim())}`,
+      `/api/public/bookings/${bookingId}/room-token?t=${encodeURIComponent(guestToken ?? '')}&name=${encodeURIComponent(name.trim())}${key ? `&g=${encodeURIComponent(key)}` : ''}`,
     );
     const data = (await res.json().catch(() => ({}))) as {
       token?: string;
@@ -699,6 +745,7 @@ export function JoinLobby(props: JoinLobbyProps) {
         bookingId={bookingId}
         isHost={mode === 'host'}
         guestToken={guestToken}
+        inviteUrl={mode === 'host' ? (props.inviteUrl ?? null) : null}
         meetingName={props.meetingName}
         hostName={props.hostName}
         initialDevices={{ micId, camId, speakerId }}
@@ -721,6 +768,43 @@ export function JoinLobby(props: JoinLobbyProps) {
       <p className="mt-2 text-sm text-text-secondary">
         with {props.hostName}, {props.dateLabel}, {props.timeLabel}
       </p>
+
+      {mode === 'host' && props.inviteUrl && (
+        <div
+          className="mt-6 max-w-md rounded-xl border border-border p-4"
+          data-testid="invite-link-box"
+        >
+          <p className="text-sm font-medium">Invite link</p>
+          <p className="mt-1 text-sm text-text-secondary">
+            Send this link to anyone you want in the meeting. Everyone who opens
+            it gets their own seat.
+          </p>
+          <div className="mt-3 flex items-center gap-2">
+            <code
+              className="min-w-0 flex-1 truncate rounded-lg bg-bg px-3 py-2 text-xs"
+              data-testid="invite-link"
+            >
+              {props.inviteUrl}
+            </code>
+            <button
+              type="button"
+              data-testid="copy-invite-button"
+              onClick={() => {
+                void navigator.clipboard
+                  .writeText(props.inviteUrl ?? '')
+                  .then(() => {
+                    setInviteCopied(true);
+                    setTimeout(() => setInviteCopied(false), 2000);
+                  })
+                  .catch(() => undefined);
+              }}
+              className="shrink-0 rounded-lg bg-[var(--primary-color)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90"
+            >
+              {inviteCopied ? 'Copied' : 'Copy link'}
+            </button>
+          </div>
+        </div>
+      )}
 
       <label className="mt-6 block text-sm font-medium" htmlFor="join-name">
         Your name
