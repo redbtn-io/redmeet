@@ -51,5 +51,15 @@ export async function GET(
               ? booking.guestAdmissionDecidedAt.toISOString()
               : null,
           },
+    // Instant meetings (Epic 8): admission is per guest, so
+    // the host's panel reads the list. Empty for booked
+    // meetings, which use the single admission above.
+    admissions: (booking.guestAdmissions ?? []).map((a) => ({
+      identity: a.identity,
+      name: a.name,
+      state: a.state,
+      requestedAt: a.requestedAt ? a.requestedAt.toISOString() : null,
+      decidedAt: a.decidedAt ? a.decidedAt.toISOString() : null,
+    })),
   });
 }

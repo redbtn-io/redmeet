@@ -4,6 +4,7 @@ import { notFound } from '@/lib/api-gate';
 import { getDb } from '@/lib/db';
 import { logJoinFailure } from '@/lib/join-events';
 import {
+  GuestKeyError,
   LiveKitNotConfiguredError,
   RoomAccessError,
   RoomFullError,
@@ -57,17 +58,22 @@ export async function GET(
       { status: 403 },
     );
   }
-  const type = await MeetType.findById(booking.meetTypeId);
+  const type = booking.meetTypeId ? await MeetType.findById(booking.meetTypeId) : null;
   // The name the guest typed in the lobby (Epic 2, story 2.1.3)
   // is the name they appear under. It is theirs to set: the join
   // token already proved they hold the invite. The booked name
   // stays the fallback.
   const typedName = search.get('name')?.trim().slice(0, 120);
+  // Instant meetings (Epic 8): the link is a share link, so the
+  // guest's own key rides along as `g` and becomes their
+  // identity. The mint validates it and refuses without one.
+  const guestKey = search.get('g') ?? undefined;
 
   try {
     await ensureBookingRoom(booking, type ?? undefined);
     const minted = await mintRoomTokenForBooking(booking, 'guest', {
       displayName: typedName || booking.guestName,
+      guestKey,
     });
     return NextResponse.json({
       token: minted.token,
@@ -79,6 +85,16 @@ export async function GET(
       closesAt: minted.closesAt,
     });
   } catch (error) {
+    if (error instanceof GuestKeyError) {
+      // Epic 8: an instant meeting mint without a usable guest
+      // key. A 400 with its own code; the lobby always sends
+      // one, so this is a malformed call, not a guest's fault
+      // to puzzle over.
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: 400 },
+      );
+    }
     if (error instanceof RoomAccessError) {
       // Epic 4: removed by the host, or a waiting room the
       // host has not admitted them to. Both are 403: the

@@ -28,6 +28,14 @@ export async function POST(
   await getDb();
   const booking = await MeetBooking.findOne({ _id: id, hostId: host._id });
   if (!booking) return notFound('No such booking');
+  if (booking.kind === 'instant') {
+    // Instant meetings (Epic 8) never write a calendar event,
+    // so there is nothing to retry.
+    return NextResponse.json(
+      { error: 'Instant meetings have no calendar invite', code: 'not_retryable' },
+      { status: 409 },
+    );
+  }
   if (booking.status === 'confirmed' || booking.status === 'cancelled') {
     return NextResponse.json(
       { error: `That booking is already ${booking.status}`, code: 'not_retryable' },
@@ -35,6 +43,6 @@ export async function POST(
     );
   }
   await retryBookingCalendar(host, booking);
-  const type = await MeetType.findById(booking.meetTypeId);
+  const type = booking.meetTypeId ? await MeetType.findById(booking.meetTypeId) : null;
   return NextResponse.json({ booking: bookingJson(booking, type ?? undefined) });
 }

@@ -4,7 +4,12 @@ import { notFound } from '@/lib/api-gate';
 import { getDb } from '@/lib/db';
 import { logJoinFailure } from '@/lib/join-events';
 import { ModerationError, requestAdmission } from '@/lib/moderation';
-import { RoomAccessError, RoomWindowError } from '@/lib/rooms';
+import {
+  RoomAccessError,
+  RoomWindowError,
+  instantGuestIdentityFor,
+  isValidGuestKey,
+} from '@/lib/rooms';
 import { secretEquals } from '@/lib/session';
 import { MeetBooking } from '@/models/meet-booking';
 
@@ -30,7 +35,8 @@ export async function POST(
 ): Promise<NextResponse> {
   const { id } = await params;
   if (!OBJECT_ID_RE.test(id)) return notFound('No such booking');
-  const presented = new URL(request.url).searchParams.get('t');
+  const search = new URL(request.url).searchParams;
+  const presented = search.get('t');
   await getDb();
   const booking = await MeetBooking.findById(id);
   if (!booking) return notFound('No such booking');
@@ -50,9 +56,29 @@ export async function POST(
     // No body: the booked name is what the host sees.
   }
 
+  // Instant meetings (Epic 8): the ask belongs to one guest,
+  // identified by their guest key. Without a valid key there is
+  // no guest to record the ask against, so the call is refused
+  // the same way the mint refuses.
+  let identity: string | undefined;
+  if (booking.kind === 'instant') {
+    const guestKey = search.get('g');
+    if (!isValidGuestKey(guestKey)) {
+      return NextResponse.json(
+        { error: 'This invite link needs a guest key to join', code: 'guest_key_required' },
+        { status: 400 },
+      );
+    }
+    identity = instantGuestIdentityFor(id, guestKey);
+  }
+
   try {
-    await requestAdmission(booking, typedName || booking.guestName);
-    return NextResponse.json({ state: booking.guestAdmissionState });
+    await requestAdmission(booking, typedName || booking.guestName, new Date(), identity);
+    const state =
+      booking.kind === 'instant'
+        ? ((booking.guestAdmissions ?? []).find((a) => a.identity === identity)?.state ?? 'none')
+        : booking.guestAdmissionState;
+    return NextResponse.json({ state });
   } catch (error) {
     if (error instanceof RoomWindowError) {
       logJoinFailure(error.code === 'room_not_open' ? 'room_not_open' : 'room_closed', {

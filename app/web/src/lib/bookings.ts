@@ -433,6 +433,10 @@ export async function cancelBooking(
 export function bookingJson(booking: MeetBookingDoc, type?: MeetTypeDoc) {
   return {
     id: String(booking._id),
+    // Booked or instant (Epic 8). Records written before the
+    // kind field existed are booked meetings.
+    kind: booking.kind ?? 'booked',
+    title: booking.title ?? '',
     guestName: booking.guestName,
     guestEmail: booking.guestEmail,
     guestPhone: booking.guestPhone,
@@ -440,7 +444,9 @@ export function bookingJson(booking: MeetBookingDoc, type?: MeetTypeDoc) {
     start: booking.start.toISOString(),
     end: booking.end.toISOString(),
     status: booking.status,
-    meetingName: type?.name ?? '',
+    // An instant meeting has no type; its name is the title the
+    // host gave it, or the plain default.
+    meetingName: type?.name ?? (booking.kind === 'instant' ? booking.title || 'Instant meeting' : ''),
     meetingSlug: type?.slug ?? '',
     calendarEventId: booking.calendarEventId ?? null,
     calendarError: booking.calendarError ?? null,

@@ -26,6 +26,7 @@ interface MeetingType {
 
 interface Booking {
   id: string;
+  kind?: string;
   guestName: string;
   guestEmail: string;
   start: string;
@@ -33,6 +34,7 @@ interface Booking {
   status: string;
   meetingName: string;
   calendarError: string | null;
+  roomStatus?: string;
   guestJoinUrl?: string | null;
   recording?: {
     status: string;
@@ -70,6 +72,13 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Instant meetings (Epic 8): the start form and the meeting
+  // it just made.
+  const [instantTitle, setInstantTitle] = useState('');
+  const [instantEntryMode, setInstantEntryMode] = useState<'open' | 'waiting_room'>('open');
+  const [instantBusy, setInstantBusy] = useState(false);
+  const [instantCreated, setInstantCreated] = useState<Booking | null>(null);
+  const [instantCopied, setInstantCopied] = useState(false);
 
   async function loadBookings() {
     const b = await fetch('/api/v0/bookings').then((r) => (r.ok ? r.json() : { bookings: [] }));
@@ -114,6 +123,55 @@ export default function Dashboard() {
           'Booking cancelled, but the calendar event could not be removed. Delete it from your calendar so the slot fully opens up.',
         );
       }
+      await loadBookings();
+    } catch {
+      setActionError('Could not reach the server. Try again.');
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function startInstantMeeting() {
+    setInstantBusy(true);
+    setActionError(null);
+    try {
+      const res = await fetch('/api/v0/instant-meetings', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ title: instantTitle, entryMode: instantEntryMode }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.booking) {
+        setActionError(data.error ?? 'Could not start the meeting. Try again.');
+        return;
+      }
+      setInstantCreated(data.booking as Booking);
+      setInstantTitle('');
+      await loadBookings();
+    } catch {
+      setActionError('Could not reach the server. Try again.');
+    } finally {
+      setInstantBusy(false);
+    }
+  }
+
+  async function endInstantMeeting(b: Booking) {
+    if (!window.confirm(`End ${b.meetingName} now? The room closes for everyone in it.`)) {
+      return;
+    }
+    setBusyId(b.id);
+    setActionError(null);
+    try {
+      const res = await fetch(`/api/v0/bookings/${b.id}/moderate`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'end' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setActionError(data.error ?? 'That did not work. Try again.');
+      }
+      if (instantCreated?.id === b.id) setInstantCreated(null);
       await loadBookings();
     } catch {
       setActionError('Could not reach the server. Try again.');
@@ -224,6 +282,86 @@ export default function Dashboard() {
         </div>
       </Card>
 
+      <Card className="mb-6">
+        <p className="text-xs uppercase tracking-[0.2em] text-text-secondary">Instant meeting</p>
+        <p className="mt-2 text-sm text-text-secondary">
+          Start a call right now, no booking and no calendar invite. You get one
+          link to send to whoever you want in it; everyone who opens it gets
+          their own seat.
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-3">
+          <input
+            data-testid="instant-title-input"
+            value={instantTitle}
+            onChange={(e) => setInstantTitle(e.target.value)}
+            maxLength={120}
+            placeholder="Meeting name (optional)"
+            className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text-primary"
+          />
+          <select
+            data-testid="instant-entry-mode"
+            value={instantEntryMode}
+            onChange={(e) => setInstantEntryMode(e.target.value as 'open' | 'waiting_room')}
+            className="rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text-primary"
+            aria-label="Who can join"
+          >
+            <option value="open">Anyone with the link joins</option>
+            <option value="waiting_room">Waiting room, you let people in</option>
+          </select>
+          <button
+            data-testid="start-instant-button"
+            onClick={() => void startInstantMeeting()}
+            disabled={instantBusy}
+            className="rounded-lg px-4 py-2 text-sm font-medium text-white transition hover:opacity-90 disabled:opacity-50"
+            style={{ backgroundColor: host.color }}
+          >
+            {instantBusy ? 'Starting...' : 'Start instant meeting'}
+          </button>
+        </div>
+        {instantCreated && (
+          <div
+            className="mt-4 rounded-lg border border-border p-3"
+            data-testid="instant-created"
+          >
+            <p className="text-sm font-medium">
+              {instantCreated.meetingName} is live. Send this link to your guests:
+            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <code
+                className="min-w-0 max-w-full truncate rounded bg-black/10 px-2 py-1 text-xs dark:bg-white/10"
+                data-testid="instant-invite-link"
+              >
+                {instantCreated.guestJoinUrl}
+              </code>
+              <button
+                onClick={() => {
+                  if (!instantCreated.guestJoinUrl) return;
+                  navigator.clipboard
+                    .writeText(instantCreated.guestJoinUrl)
+                    .then(() => {
+                      setInstantCopied(true);
+                      setTimeout(() => setInstantCopied(false), 2000);
+                    })
+                    .catch(() => undefined);
+                }}
+                className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition hover:text-text-primary"
+              >
+                <IconCopy /> {instantCopied ? 'Copied' : 'Copy link'}
+              </button>
+              <a
+                href={`/join/${instantCreated.id}?as=host`}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-lg px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90"
+                style={{ backgroundColor: host.color }}
+              >
+                Join now
+              </a>
+            </div>
+          </div>
+        )}
+      </Card>
+
       <h3 className="mb-3 text-lg font-semibold">Agenda</h3>
       {actionError && (
         <p className="mb-3 rounded-lg border border-accent/40 px-3 py-2 text-sm text-text-secondary">
@@ -266,11 +404,18 @@ export default function Dashboard() {
                         style={{ backgroundColor: ended || b.status === 'cancelled' ? '#9ca3af' : host.color }}
                       >
                         <div className="truncate text-sm font-medium">
-                          {b.meetingName} with {b.guestName}
+                          {b.kind === 'instant'
+                            ? b.meetingName
+                            : `${b.meetingName} with ${b.guestName}`}
                         </div>
                         <div className="text-sm opacity-90">
                           {start.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })} -{' '}
                           {end.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                          {b.kind === 'instant' && (
+                            <span className="ml-2 rounded bg-black/30 px-1.5 py-0.5 text-xs">
+                              instant
+                            </span>
+                          )}
                           {b.status === 'calendar_failed' && (
                             <span className="ml-2 rounded bg-black/30 px-1.5 py-0.5 text-xs">
                               calendar invite pending
@@ -333,7 +478,7 @@ export default function Dashboard() {
                             )}
                           </div>
                         )}
-                        {b.status !== 'cancelled' && !ended && (
+                        {b.status !== 'cancelled' && !ended && b.roomStatus !== 'closed' && (
                           <div className="mt-2 flex flex-wrap gap-2">
                             <a
                               href={`/join/${b.id}?as=host`}
@@ -352,25 +497,38 @@ export default function Dashboard() {
                                 }}
                                 className="cursor-pointer rounded bg-black/30 px-2 py-1 text-xs text-white transition hover:bg-black/40"
                               >
-                                Copy guest link
+                                {b.kind === 'instant' ? 'Copy invite link' : 'Copy guest link'}
                               </button>
                             )}
-                            {(b.status === 'calendar_failed' || b.status === 'pending_calendar') && (
+                            {b.kind === 'instant' ? (
                               <button
-                                onClick={() => actOnBooking(b, 'retry-calendar')}
+                                onClick={() => endInstantMeeting(b)}
                                 disabled={busyId === b.id}
                                 className="cursor-pointer rounded bg-black/30 px-2 py-1 text-xs text-white transition hover:bg-black/40 disabled:opacity-50"
                               >
-                                {busyId === b.id ? 'Working...' : 'Retry invite'}
+                                {busyId === b.id ? 'Working...' : 'End meeting'}
                               </button>
+                            ) : (
+                              <>
+                                {(b.status === 'calendar_failed' ||
+                                  b.status === 'pending_calendar') && (
+                                  <button
+                                    onClick={() => actOnBooking(b, 'retry-calendar')}
+                                    disabled={busyId === b.id}
+                                    className="cursor-pointer rounded bg-black/30 px-2 py-1 text-xs text-white transition hover:bg-black/40 disabled:opacity-50"
+                                  >
+                                    {busyId === b.id ? 'Working...' : 'Retry invite'}
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => actOnBooking(b, 'cancel')}
+                                  disabled={busyId === b.id}
+                                  className="cursor-pointer rounded bg-black/30 px-2 py-1 text-xs text-white transition hover:bg-black/40 disabled:opacity-50"
+                                >
+                                  Cancel booking
+                                </button>
+                              </>
                             )}
-                            <button
-                              onClick={() => actOnBooking(b, 'cancel')}
-                              disabled={busyId === b.id}
-                              className="cursor-pointer rounded bg-black/30 px-2 py-1 text-xs text-white transition hover:bg-black/40 disabled:opacity-50"
-                            >
-                              Cancel booking
-                            </button>
                           </div>
                         )}
                       </div>

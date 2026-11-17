@@ -4,7 +4,14 @@ import { notFound } from '@/lib/api-gate';
 import { getDb } from '@/lib/db';
 import { logJoinFailure } from '@/lib/join-events';
 import { recordingStateFor } from '@/lib/recording';
-import { guestIdentityFor, roomClosesAt, roomOpensAt, roomPhase } from '@/lib/rooms';
+import {
+  guestIdentityFor,
+  instantGuestIdentityFor,
+  isValidGuestKey,
+  roomClosesAt,
+  roomOpensAt,
+  roomPhase,
+} from '@/lib/rooms';
 import { secretEquals } from '@/lib/session';
 import { MeetBooking } from '@/models/meet-booking';
 import { MeetHost } from '@/models/meet-host';
@@ -35,7 +42,8 @@ export async function GET(
 ): Promise<NextResponse> {
   const { id } = await params;
   if (!OBJECT_ID_RE.test(id)) return notFound('No such booking');
-  const presented = new URL(request.url).searchParams.get('t');
+  const search = new URL(request.url).searchParams;
+  const presented = search.get('t');
   await getDb();
   const booking = await MeetBooking.findById(id);
   if (!booking) return notFound('No such booking');
@@ -47,12 +55,32 @@ export async function GET(
     );
   }
   const host = await MeetHost.findById(booking.hostId);
-  const type = await MeetType.findById(booking.meetTypeId);
-  if (!host || !type) return notFound('No such booking');
+  const type = booking.meetTypeId ? await MeetType.findById(booking.meetTypeId) : null;
+  // A booked meeting without its type is a broken record. An
+  // instant meeting (Epic 8) has no type by design; its name
+  // is the title on the record.
+  if (!host || (!type && booking.kind !== 'instant')) return notFound('No such booking');
+
+  // Epic 8: on an instant meeting the caller is one guest among
+  // many, identified by their guest key. Their admission state
+  // and removal flag are read from their own entry, so one
+  // guest's state never leaks into another's answer. Without a
+  // valid key the answer is the anonymous default (nothing
+  // admitted, nothing removed), and the mint still refuses.
+  const isInstant = booking.kind === 'instant';
+  const guestKey = search.get('g');
+  const identity =
+    isInstant && isValidGuestKey(guestKey)
+      ? instantGuestIdentityFor(id, guestKey)
+      : guestIdentityFor(id);
+  const admissionState = isInstant
+    ? ((booking.guestAdmissions ?? []).find((a) => a.identity === identity)?.state ?? 'none')
+    : (booking.guestAdmissionState ?? 'none');
 
   const now = new Date();
   return NextResponse.json({
-    meetingName: type.name,
+    kind: booking.kind ?? 'booked',
+    meetingName: type?.name ?? (booking.title || 'Instant meeting'),
     hostName: host.displayName,
     guestName: booking.guestName,
     start: booking.start.toISOString(),
@@ -67,8 +95,8 @@ export async function GET(
     // is exact). Removed and ended are how a disconnected
     // guest's client tells what actually happened to them.
     entryMode: booking.entryMode ?? 'open',
-    admissionState: booking.guestAdmissionState ?? 'none',
-    removed: (booking.removedIdentities ?? []).includes(guestIdentityFor(id)),
+    admissionState,
+    removed: (booking.removedIdentities ?? []).includes(identity),
     // Epic 6: the recording state the in-room guest UI polls,
     // so the recording indicator and the start announcement
     // are driven by server state for everyone in the room,

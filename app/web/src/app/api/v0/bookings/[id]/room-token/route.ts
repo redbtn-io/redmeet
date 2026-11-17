@@ -41,7 +41,7 @@ export async function POST(
   await getDb();
   const booking = await MeetBooking.findOne({ _id: id, hostId: host._id });
   if (!booking) return notFound('No such booking');
-  const type = await MeetType.findById(booking.meetTypeId);
+  const type = booking.meetTypeId ? await MeetType.findById(booking.meetTypeId) : null;
   // The name typed in the lobby (Epic 2) wins over the profile
   // display name; a host may want to appear as something more
   // specific for one meeting. The body is optional and untrusted
