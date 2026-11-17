@@ -1,12 +1,21 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Room, RoomEvent } from 'livekit-client';
+import { LocalVideoTrack, Room, RoomEvent } from 'livekit-client';
+import { ChevronDown, Mic, MicOff, Sparkles, Video, VideoOff } from 'lucide-react';
 
+import {
+  applyBlur,
+  blurSupported,
+  createBlurProcessor,
+  loadBlurPreference,
+  saveBlurPreference,
+} from '@/lib/background-blur';
 import {
   loadDeviceMemory,
   saveDeviceMemory,
 } from '@/lib/device-memory';
+import { colorForIdentity, initialsFor } from '@/lib/room-ui';
 import { MeetingRoom } from './MeetingRoom';
 
 /**
@@ -156,10 +165,19 @@ export function JoinLobby(props: JoinLobbyProps) {
   const [speakerId, setSpeakerId] = useState('');
   const [micLevel, setMicLevel] = useState(0);
   const [previewNonce, setPreviewNonce] = useState(0);
+  // Background blur: the wish (remembered in this browser, read
+  // after mount so the server render never guesses it), whether
+  // the browser can do it, and a notice the join hands the room.
+  const [blurOn, setBlurOn] = useState(false);
+  const [blurAvailable, setBlurAvailable] = useState(false);
+  const [joinNotice, setJoinNotice] = useState<string | null>(null);
 
   const [, setClockTick] = useState(0);
 
   const previewStreamRef = useRef<MediaStream | null>(null);
+  // The preview camera as a LiveKit track, so the same blur
+  // processor the room uses can run on the preview.
+  const previewTrackRef = useRef<LocalVideoTrack | null>(null);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const levelAudioRef = useRef<{ ctx: AudioContext; raf: number } | null>(null);
   const roomRef = useRef<Room | null>(null);
@@ -212,6 +230,12 @@ export function JoinLobby(props: JoinLobbyProps) {
 
   const stopPreview = useCallback(() => {
     stopLevelMeter();
+    const previewTrack = previewTrackRef.current;
+    previewTrackRef.current = null;
+    if (previewTrack) {
+      void previewTrack.stopProcessor().catch(() => undefined);
+      previewTrack.detach();
+    }
     previewStreamRef.current?.getTracks().forEach((track) => track.stop());
     previewStreamRef.current = null;
     if (previewVideoRef.current) previewVideoRef.current.srcObject = null;
@@ -268,7 +292,14 @@ export function JoinLobby(props: JoinLobbyProps) {
         audio: micOn ? (micId ? { deviceId: { exact: micId } } : true) : false,
       });
       previewStreamRef.current = stream;
-      if (previewVideoRef.current) previewVideoRef.current.srcObject = stream;
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack && previewVideoRef.current) {
+        // userProvidedTrack: the lobby owns this capture and
+        // stops it itself in stopPreview.
+        const previewTrack = new LocalVideoTrack(videoTrack, undefined, true);
+        previewTrackRef.current = previewTrack;
+        previewTrack.attach(previewVideoRef.current);
+      }
       startLevelMeter(stream);
       await refreshDevices();
       setPreviewState('ready');
@@ -292,6 +323,43 @@ export function JoinLobby(props: JoinLobbyProps) {
     void acquirePreview();
     return () => stopPreview();
   }, [acquirePreview, screen, previewNonce, stopPreview]);
+
+  // Blur: read the remembered wish and whether this browser can
+  // do it, once, after mount.
+  useEffect(() => {
+    setBlurOn(loadBlurPreference());
+    let cancelled = false;
+    void blurSupported().then((ok) => {
+      if (!cancelled) setBlurAvailable(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Blur on the preview: toggling it never re-acquires the
+  // camera, it only swaps the processor on the live preview
+  // track. A preview torn down mid-change drops its processor.
+  useEffect(() => {
+    if (!blurAvailable || previewState !== 'ready') return;
+    const track = previewTrackRef.current;
+    if (!track) return;
+    void applyBlur(track, blurOn)
+      .then(() => {
+        if (previewTrackRef.current !== track) void track.stopProcessor().catch(() => undefined);
+      })
+      .catch(() => {
+        setBlurOn(false);
+        saveBlurPreference(false);
+        setJoinError('Background blur could not start on this device. Your camera works without it.');
+      });
+  }, [blurOn, blurAvailable, previewState]);
+
+  function toggleBlur() {
+    const next = !blurOn;
+    setBlurOn(next);
+    saveBlurPreference(next);
+  }
 
   // Remembered devices (Epic 3, story 3.3.3): the lobby opens
   // with the mic, camera, and speaker the participant picked
@@ -554,7 +622,25 @@ export function JoinLobby(props: JoinLobbyProps) {
         }
       }
       if (useMic) await room.localParticipant.setMicrophoneEnabled(true);
-      if (useCam) await room.localParticipant.setCameraEnabled(true);
+      setJoinNotice(null);
+      if (useCam && blurOn && blurAvailable) {
+        // Blur from the very first published frame: the camera
+        // is created WITH the processor, never blurred after the
+        // fact. Someone who asked for blur gets their camera off,
+        // not an unblurred room, if the processor cannot start.
+        try {
+          const processor = await createBlurProcessor();
+          await room.localParticipant.setCameraEnabled(true, { processor });
+        } catch {
+          await room.localParticipant.setCameraEnabled(false).catch(() => undefined);
+          saveBlurPreference(false);
+          setJoinNotice(
+            'Background blur could not start, so your camera is off. Turn it on when you are ready to be seen without blur.',
+          );
+        }
+      } else if (useCam) {
+        await room.localParticipant.setCameraEnabled(true);
+      }
       setRoomNonce((n) => n + 1);
       setScreen('inroom');
       reportJoinedOnce();
@@ -755,6 +841,7 @@ export function JoinLobby(props: JoinLobbyProps) {
         meetingName={props.meetingName}
         hostName={props.hostName}
         initialDevices={{ micId, camId, speakerId }}
+        initialNotice={joinNotice}
         onLeave={() => void leave()}
         onEnded={() => {
           intentionalLeaveRef.current = true;
@@ -767,300 +854,380 @@ export function JoinLobby(props: JoinLobbyProps) {
     );
   }
 
-  // Lobby (story 2.2).
+  // Lobby (story 2.2), mobile first: the preview leads with
+  // its controls on it (the way every call app does it), and
+  // the details, name, and join sit beside it on desktop or
+  // under it on a phone. Device pickers fold away; most people
+  // never need them.
+  const previewLive = camOn && (previewState === 'ready' || previewState === 'starting');
+  const joinDisabledLabel = alreadyClosed
+    ? 'This meeting has ended'
+    : notYetOpen
+      ? `Room opens at ${timeLabel(opensAt)}`
+      : null;
+  const primaryButton =
+    'w-full rounded-full bg-[var(--primary-color)] px-6 py-3 text-sm font-semibold text-white transition hover:opacity-90 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50';
+  const previewButton = (on: boolean) =>
+    `flex h-11 w-11 items-center justify-center rounded-full backdrop-blur-md transition active:scale-95 ${
+      on ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-red-600 text-white hover:bg-red-500'
+    }`;
+
   return (
-    <div className="rounded-2xl border border-border bg-bg-secondary p-8" data-testid="join-lobby">
-      <h1 className="text-2xl font-semibold">{props.meetingName}</h1>
-      <p className="mt-2 text-sm text-text-secondary">
-        with {props.hostName}, {props.dateLabel}, {props.timeLabel}
-      </p>
-      {props.willRecord && (
-        <p className="mt-2 text-sm text-text-secondary" data-testid="will-record-note">
-          This meeting will be recorded. The recording starts automatically when the
-          meeting begins.
-        </p>
-      )}
+    <div
+      className="rounded-3xl border border-border bg-bg-secondary p-3 sm:p-6 md:p-7"
+      data-testid="join-lobby"
+    >
+      <div className="grid gap-5 md:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] md:gap-7">
+        <div>
+          <div className="relative aspect-[4/3] w-full overflow-hidden rounded-2xl bg-zinc-900 sm:aspect-video">
+            <video
+              ref={previewVideoRef}
+              autoPlay
+              playsInline
+              muted
+              data-testid="preview-video"
+              className={`h-full w-full -scale-x-100 object-cover ${camOn ? '' : 'hidden'}`}
+            />
+            {!camOn && (
+              <div className="flex h-full w-full flex-col items-center justify-center gap-3 text-sm text-white/60">
+                <span
+                  className="flex h-20 w-20 items-center justify-center rounded-full text-2xl font-semibold text-white"
+                  style={{ backgroundColor: colorForIdentity(name || 'guest') }}
+                >
+                  {initialsFor(name)}
+                </span>
+                Camera is off
+              </div>
+            )}
+            {previewLive && previewState === 'starting' && (
+              <div className="absolute inset-0 flex items-center justify-center text-sm text-white/60">
+                Starting your camera...
+              </div>
+            )}
 
-      {mode === 'host' && props.inviteUrl && (
-        <div
-          className="mt-6 max-w-md rounded-xl border border-border p-4"
-          data-testid="invite-link-box"
-        >
-          <p className="text-sm font-medium">Invite link</p>
-          <p className="mt-1 text-sm text-text-secondary">
-            Send this link to anyone you want in the meeting. Everyone who opens
-            it gets their own seat.
-          </p>
-          <div className="mt-3 flex items-center gap-2">
-            <code
-              className="min-w-0 flex-1 truncate rounded-lg bg-bg px-3 py-2 text-xs"
-              data-testid="invite-link"
-            >
-              {props.inviteUrl}
-            </code>
-            <button
-              type="button"
-              data-testid="copy-invite-button"
-              onClick={() => {
-                void navigator.clipboard
-                  .writeText(props.inviteUrl ?? '')
-                  .then(() => {
-                    setInviteCopied(true);
-                    setTimeout(() => setInviteCopied(false), 2000);
-                  })
-                  .catch(() => undefined);
-              }}
-              className="shrink-0 rounded-lg bg-[var(--primary-color)] px-4 py-2 text-sm font-medium text-white transition hover:opacity-90"
-            >
-              {inviteCopied ? 'Copied' : 'Copy link'}
-            </button>
-          </div>
-        </div>
-      )}
+            {micOn && previewState === 'ready' && (
+              <div
+                className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/50 px-2.5 py-1.5 backdrop-blur-md"
+                aria-hidden
+              >
+                <Mic className="h-3.5 w-3.5 text-white/80" />
+                <div className="h-1.5 w-14 overflow-hidden rounded-full bg-white/20">
+                  <div
+                    className="h-full rounded-full bg-emerald-400 transition-[width] duration-75"
+                    style={{ width: `${Math.round(micLevel * 100)}%` }}
+                    data-testid="mic-level"
+                  />
+                </div>
+              </div>
+            )}
 
-      <label className="mt-6 block text-sm font-medium" htmlFor="join-name">
-        Your name
-      </label>
-      <input
-        id="join-name"
-        data-testid="name-input"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        maxLength={120}
-        className="mt-1 w-full max-w-md rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text-primary"
-      />
-
-      <div className="relative mt-6 aspect-video w-full max-w-md overflow-hidden rounded-xl bg-black">
-        <video
-          ref={previewVideoRef}
-          autoPlay
-          playsInline
-          muted
-          data-testid="preview-video"
-          className={`h-full w-full object-cover ${camOn ? '' : 'hidden'}`}
-        />
-        {!camOn && (
-          <div className="flex h-full w-full items-center justify-center text-sm text-white/70">
-            Camera is off
-          </div>
-        )}
-      </div>
-
-      {(previewState === 'denied' || previewState === 'unavailable') && (
-        <div
-          className="mt-4 max-w-md rounded-xl border border-border p-4"
-          data-testid="permission-denied"
-        >
-          <p className="text-sm font-medium">
-            {previewState === 'denied'
-              ? 'Your browser blocked the camera or microphone'
-              : 'No camera or microphone was found'}
-          </p>
-          <p className="mt-1 text-sm text-text-secondary">
-            {previewState === 'denied'
-              ? 'redMeet needs your permission to use them. Check the camera icon in your browser address bar, allow access, then try again. You can also join without video, or just listen.'
-              : 'This device does not seem to have a camera or microphone available. You can still join and listen.'}
-          </p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setPreviewNonce((n) => n + 1)}
-              className="rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition hover:text-text-primary"
-            >
-              Try again
-            </button>
-            {previewState === 'denied' && (
+            <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-3 bg-gradient-to-t from-black/60 to-transparent pb-3 pt-10">
               <button
                 type="button"
-                data-testid="audio-only-button"
-                onClick={() => setCamOn(false)}
-                className="rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition hover:text-text-primary"
+                data-testid="mic-toggle"
+                aria-pressed={micOn}
+                aria-label={micOn ? 'Turn microphone off' : 'Turn microphone on'}
+                title={micOn ? 'Microphone on' : 'Microphone off'}
+                onClick={() => setMicOn((v) => !v)}
+                className={previewButton(micOn)}
               >
-                Join with microphone only
+                {micOn ? <Mic className="h-5 w-5" aria-hidden /> : <MicOff className="h-5 w-5" aria-hidden />}
               </button>
-            )}
-            <button
-              type="button"
-              data-testid="listen-only-button"
-              onClick={() => {
-                setCamOn(false);
-                setMicOn(false);
-                void join({ cam: false, mic: false });
-              }}
-              className="rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition hover:text-text-primary"
-            >
-              Listen only
-            </button>
+              <button
+                type="button"
+                data-testid="camera-toggle"
+                aria-pressed={camOn}
+                aria-label={camOn ? 'Turn camera off' : 'Turn camera on'}
+                title={camOn ? 'Camera on' : 'Camera off'}
+                onClick={() => setCamOn((v) => !v)}
+                className={previewButton(camOn)}
+              >
+                {camOn ? <Video className="h-5 w-5" aria-hidden /> : <VideoOff className="h-5 w-5" aria-hidden />}
+              </button>
+              {blurAvailable && (
+                <button
+                  type="button"
+                  data-testid="lobby-blur-toggle"
+                  aria-pressed={blurOn}
+                  aria-label={blurOn ? 'Turn background blur off' : 'Blur your background'}
+                  title={blurOn ? 'Background blur on' : 'Blur your background'}
+                  onClick={toggleBlur}
+                  disabled={!camOn}
+                  className={`flex h-11 items-center gap-2 rounded-full px-4 text-sm font-medium backdrop-blur-md transition active:scale-95 disabled:opacity-40 ${
+                    blurOn
+                      ? 'bg-[var(--primary-color)] text-white hover:opacity-90'
+                      : 'bg-white/20 text-white hover:bg-white/30'
+                  }`}
+                >
+                  <Sparkles className="h-4 w-4" aria-hidden />
+                  <span>{blurOn ? 'Blur on' : 'Blur'}</span>
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      )}
 
-      <div className="mt-4 flex flex-wrap items-center gap-3">
-        <button
-          type="button"
-          data-testid="mic-toggle"
-          aria-pressed={micOn}
-          onClick={() => setMicOn((v) => !v)}
-          className="rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition hover:text-text-primary"
-        >
-          Microphone: {micOn ? 'On' : 'Off'}
-        </button>
-        <button
-          type="button"
-          data-testid="camera-toggle"
-          aria-pressed={camOn}
-          onClick={() => setCamOn((v) => !v)}
-          className="rounded-lg border border-border px-3 py-2 text-sm text-text-secondary transition hover:text-text-primary"
-        >
-          Camera: {camOn ? 'On' : 'Off'}
-        </button>
-        <div className="flex items-center gap-2" aria-hidden>
-          <span className="text-xs text-text-secondary">Mic level</span>
-          <div className="h-2 w-24 overflow-hidden rounded bg-black/30">
+          {(previewState === 'denied' || previewState === 'unavailable') && (
             <div
-              className="h-full bg-green-500 transition-[width] duration-75"
-              style={{ width: `${Math.round(micLevel * 100)}%` }}
-              data-testid="mic-level"
-            />
+              className="mt-3 rounded-2xl border border-amber-400/40 p-4"
+              data-testid="permission-denied"
+            >
+              <p className="text-sm font-medium">
+                {previewState === 'denied'
+                  ? 'Your browser blocked the camera or microphone'
+                  : 'No camera or microphone was found'}
+              </p>
+              <p className="mt-1 text-sm text-text-secondary">
+                {previewState === 'denied'
+                  ? 'redMeet needs your permission to use them. Check the camera icon in your browser address bar, allow access, then try again. You can also join without video, or just listen.'
+                  : 'This device does not seem to have a camera or microphone available. You can still join and listen.'}
+              </p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => setPreviewNonce((n) => n + 1)}
+                  className="rounded-full border border-border px-4 py-2 text-sm text-text-secondary transition hover:text-text-primary"
+                >
+                  Try again
+                </button>
+                {previewState === 'denied' && (
+                  <button
+                    type="button"
+                    data-testid="audio-only-button"
+                    onClick={() => setCamOn(false)}
+                    className="rounded-full border border-border px-4 py-2 text-sm text-text-secondary transition hover:text-text-primary"
+                  >
+                    Join with microphone only
+                  </button>
+                )}
+                <button
+                  type="button"
+                  data-testid="listen-only-button"
+                  onClick={() => {
+                    setCamOn(false);
+                    setMicOn(false);
+                    void join({ cam: false, mic: false });
+                  }}
+                  className="rounded-full border border-border px-4 py-2 text-sm text-text-secondary transition hover:text-text-primary"
+                >
+                  Listen only
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex min-w-0 flex-col px-1 sm:px-0">
+          <h1 className="text-xl font-semibold sm:text-2xl">{props.meetingName}</h1>
+          <p className="mt-1 text-sm text-text-secondary">
+            with {props.hostName} · {props.dateLabel}, {props.timeLabel}
+          </p>
+          {props.willRecord && (
+            <p
+              className="mt-3 flex items-start gap-2 rounded-xl bg-red-600/10 px-3 py-2 text-sm text-text-secondary"
+              data-testid="will-record-note"
+            >
+              <span className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-red-500" aria-hidden />
+              This meeting will be recorded. The recording starts automatically when the
+              meeting begins.
+            </p>
+          )}
+
+          {mode === 'host' && props.inviteUrl && (
+            <div
+              className="mt-4 rounded-2xl border border-border p-3"
+              data-testid="invite-link-box"
+            >
+              <p className="text-sm font-medium">Invite link</p>
+              <p className="mt-0.5 text-xs text-text-secondary">
+                Send this link to anyone you want in the meeting. Everyone who opens it gets
+                their own seat.
+              </p>
+              <div className="mt-2 flex items-center gap-2">
+                <code
+                  className="min-w-0 flex-1 truncate rounded-lg bg-bg px-3 py-2 text-xs"
+                  data-testid="invite-link"
+                >
+                  {props.inviteUrl}
+                </code>
+                <button
+                  type="button"
+                  data-testid="copy-invite-button"
+                  onClick={() => {
+                    void navigator.clipboard
+                      .writeText(props.inviteUrl ?? '')
+                      .then(() => {
+                        setInviteCopied(true);
+                        setTimeout(() => setInviteCopied(false), 2000);
+                      })
+                      .catch(() => undefined);
+                  }}
+                  className="shrink-0 rounded-full bg-[var(--primary-color)] px-4 py-2 text-xs font-semibold text-white transition hover:opacity-90"
+                >
+                  {inviteCopied ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          <label className="mt-5 block text-sm font-medium" htmlFor="join-name">
+            Your name
+          </label>
+          <input
+            id="join-name"
+            data-testid="name-input"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            maxLength={120}
+            autoComplete="name"
+            className="mt-1.5 w-full rounded-xl border border-border bg-bg px-3.5 py-2.5 text-base text-text-primary sm:text-sm"
+          />
+
+          {joinError && (
+            <p
+              className="mt-3 rounded-xl border border-accent/40 px-3 py-2 text-sm text-text-secondary"
+              data-testid="join-error"
+            >
+              {joinError}
+            </p>
+          )}
+
+          <div className="mt-5">
+            {waitingRoom && admission === 'waiting' ? (
+              <div
+                className="rounded-2xl border border-border p-4"
+                data-testid="waiting-panel"
+                role="status"
+              >
+                <p className="flex items-center gap-2 text-sm font-medium">
+                  <span className="h-2 w-2 animate-pulse rounded-full bg-amber-400" aria-hidden />
+                  You are in the waiting room
+                </p>
+                <p className="mt-1 text-sm text-text-secondary">
+                  {props.hostName} will let you in soon. Stay on this page, and you will be able
+                  to join the moment they do.
+                </p>
+              </div>
+            ) : waitingRoom && admission === 'denied' ? (
+              <div
+                className="rounded-2xl border border-border p-4"
+                data-testid="admission-denied"
+              >
+                <p className="text-sm font-medium">The host could not admit you</p>
+                <p className="mt-1 text-sm text-text-secondary">
+                  That ends this try. If you think it was a mistake, ask again and the host will
+                  see a new request.
+                </p>
+                <button
+                  type="button"
+                  data-testid="ask-again-button"
+                  disabled={notYetOpen || alreadyClosed || !name.trim() || admissionBusy}
+                  onClick={() => void askToJoin()}
+                  className={`mt-3 ${primaryButton}`}
+                >
+                  Ask again
+                </button>
+              </div>
+            ) : waitingRoom && admission !== 'admitted' ? (
+              <>
+                <button
+                  type="button"
+                  data-testid="ask-to-join-button"
+                  disabled={notYetOpen || alreadyClosed || !name.trim() || admissionBusy}
+                  onClick={() => void askToJoin()}
+                  className={primaryButton}
+                >
+                  {joinDisabledLabel ?? 'Ask to join'}
+                </button>
+                {!notYetOpen && !alreadyClosed && (
+                  <p className="mt-2 text-center text-xs text-text-secondary">
+                    This meeting uses a waiting room. Ask to join, and {props.hostName} will let
+                    you in.
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  data-testid="join-button"
+                  disabled={notYetOpen || alreadyClosed || !name.trim()}
+                  onClick={() => void join()}
+                  className={primaryButton}
+                >
+                  {joinDisabledLabel ?? 'Join meeting'}
+                </button>
+                {!notYetOpen && !alreadyClosed && (
+                  <p className="mt-2 text-center text-xs text-text-secondary">
+                    {waitingRoom
+                      ? `The host let you in. The room closes at ${timeLabel(closesAt)}.`
+                      : `The room is open. It closes at ${timeLabel(closesAt)}.`}
+                  </p>
+                )}
+              </>
+            )}
           </div>
+
+          <details className="group mt-5 rounded-2xl border border-border">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-4 py-3 text-sm font-medium [&::-webkit-details-marker]:hidden">
+              Microphone, camera, and speaker
+              <ChevronDown
+                className="h-4 w-4 text-text-secondary transition group-open:rotate-180"
+                aria-hidden
+              />
+            </summary>
+            <div className="grid gap-3 px-4 pb-4">
+              <label className="block text-sm">
+                <span className="text-text-secondary">Microphone</span>
+                <select
+                  data-testid="device-mic"
+                  value={micId}
+                  onChange={(e) => setMicId(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-sm text-text-primary"
+                >
+                  <option value="">Browser default</option>
+                  {mics.map((d, i) => (
+                    <option key={d.deviceId || `mic-${i}`} value={d.deviceId}>
+                      {deviceLabel(d, 'Microphone', i)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-sm">
+                <span className="text-text-secondary">Camera</span>
+                <select
+                  data-testid="device-camera"
+                  value={camId}
+                  onChange={(e) => setCamId(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-sm text-text-primary"
+                >
+                  <option value="">Browser default</option>
+                  {cams.map((d, i) => (
+                    <option key={d.deviceId || `cam-${i}`} value={d.deviceId}>
+                      {deviceLabel(d, 'Camera', i)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-sm">
+                <span className="text-text-secondary">Speaker</span>
+                <select
+                  data-testid="device-speaker"
+                  value={speakerId}
+                  onChange={(e) => setSpeakerId(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-sm text-text-primary"
+                >
+                  <option value="">Browser default</option>
+                  {speakers.map((d, i) => (
+                    <option key={d.deviceId || `spk-${i}`} value={d.deviceId}>
+                      {deviceLabel(d, 'Speaker', i)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          </details>
         </div>
       </div>
-
-      <div className="mt-4 grid max-w-md gap-3">
-        <label className="block text-sm">
-          <span className="text-text-secondary">Microphone</span>
-          <select
-            data-testid="device-mic"
-            value={micId}
-            onChange={(e) => setMicId(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text-primary"
-          >
-            <option value="">Browser default</option>
-            {mics.map((d, i) => (
-              <option key={d.deviceId || `mic-${i}`} value={d.deviceId}>
-                {deviceLabel(d, 'Microphone', i)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="block text-sm">
-          <span className="text-text-secondary">Camera</span>
-          <select
-            data-testid="device-camera"
-            value={camId}
-            onChange={(e) => setCamId(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text-primary"
-          >
-            <option value="">Browser default</option>
-            {cams.map((d, i) => (
-              <option key={d.deviceId || `cam-${i}`} value={d.deviceId}>
-                {deviceLabel(d, 'Camera', i)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="block text-sm">
-          <span className="text-text-secondary">Speaker</span>
-          <select
-            data-testid="device-speaker"
-            value={speakerId}
-            onChange={(e) => setSpeakerId(e.target.value)}
-            className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text-primary"
-          >
-            <option value="">Browser default</option>
-            {speakers.map((d, i) => (
-              <option key={d.deviceId || `spk-${i}`} value={d.deviceId}>
-                {deviceLabel(d, 'Speaker', i)}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      {joinError && (
-        <p className="mt-4 max-w-md rounded-lg border border-accent/40 px-3 py-2 text-sm text-text-secondary" data-testid="join-error">
-          {joinError}
-        </p>
-      )}
-
-      {waitingRoom && admission === 'waiting' ? (
-        <div
-          className="mt-6 max-w-md rounded-xl border border-border p-4"
-          data-testid="waiting-panel"
-          role="status"
-        >
-          <p className="text-sm font-medium">You are in the waiting room</p>
-          <p className="mt-1 text-sm text-text-secondary">
-            {props.hostName} will let you in soon. Stay on this page, and you will be
-            able to join the moment they do.
-          </p>
-        </div>
-      ) : waitingRoom && admission === 'denied' ? (
-        <div
-          className="mt-6 max-w-md rounded-xl border border-border p-4"
-          data-testid="admission-denied"
-        >
-          <p className="text-sm font-medium">The host could not admit you</p>
-          <p className="mt-1 text-sm text-text-secondary">
-            That ends this try. If you think it was a mistake, ask again and the host
-            will see a new request.
-          </p>
-          <button
-            type="button"
-            data-testid="ask-again-button"
-            disabled={notYetOpen || alreadyClosed || !name.trim() || admissionBusy}
-            onClick={() => void askToJoin()}
-            className="mt-3 rounded-lg bg-[var(--primary-color)] px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Ask again
-          </button>
-        </div>
-      ) : waitingRoom && admission !== 'admitted' ? (
-        <>
-          <button
-            type="button"
-            data-testid="ask-to-join-button"
-            disabled={notYetOpen || alreadyClosed || !name.trim() || admissionBusy}
-            onClick={() => void askToJoin()}
-            className="mt-6 rounded-lg bg-[var(--primary-color)] px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {alreadyClosed
-              ? 'This meeting has ended'
-              : notYetOpen
-                ? `Room opens at ${timeLabel(opensAt)}`
-                : 'Ask to join'}
-          </button>
-          {!notYetOpen && !alreadyClosed && (
-            <p className="mt-2 text-xs text-text-secondary">
-              This meeting uses a waiting room. Ask to join, and {props.hostName} will
-              let you in.
-            </p>
-          )}
-        </>
-      ) : (
-        <>
-          <button
-            type="button"
-            data-testid="join-button"
-            disabled={notYetOpen || alreadyClosed || !name.trim()}
-            onClick={() => void join()}
-            className="mt-6 rounded-lg bg-[var(--primary-color)] px-5 py-2.5 text-sm font-medium text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {alreadyClosed
-              ? 'This meeting has ended'
-              : notYetOpen
-                ? `Room opens at ${timeLabel(opensAt)}`
-                : 'Join meeting'}
-          </button>
-          {!notYetOpen && !alreadyClosed && (
-            <p className="mt-2 text-xs text-text-secondary">
-              {waitingRoom
-                ? `The host let you in. The room closes at ${timeLabel(closesAt)}.`
-                : `The room is open. It closes at ${timeLabel(closesAt)}.`}
-            </p>
-          )}
-        </>
-      )}
     </div>
   );
 }
