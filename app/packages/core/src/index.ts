@@ -184,6 +184,16 @@ export const meetingTypeInputSchema = z.object({
    */
   entryMode: z.enum(['open', 'waiting_room']).default('open'),
   /**
+   * Auto record (Epic 9): bookings of this type record
+   * automatically when the room starts, and guests are told
+   * before they book. Optional with no zod default, like the
+   * Epic 5 settings below: unset stays unset in storage and
+   * the effective value (default off) resolves in
+   * lib/meeting-settings.ts in the web app. Bookings copy the
+   * resolved value at booking time.
+   */
+  recordAutomatically: z.boolean().optional(),
+  /**
    * Meeting behavior settings (Epic 5): the participant limit
    * and the room window numbers a booking of this type runs
    * with. All optional with no zod default on purpose: unset

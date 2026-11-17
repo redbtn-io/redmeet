@@ -9,7 +9,7 @@ import { logMeetingEvent } from '@/lib/join-events';
 import { egressService } from '@/lib/livekit';
 import { logger } from '@/lib/log';
 import { LiveKitNotConfiguredError, LiveKitUnreachableError } from '@/lib/rooms';
-import type { MeetBookingDoc, RecordingStatus } from '@/models/meet-booking';
+import { MeetBooking, type MeetBookingDoc, type RecordingStatus } from '@/models/meet-booking';
 
 /**
  * Meeting recording (Epic 6): LiveKit Egress room composite
@@ -348,6 +348,13 @@ export async function stopRecording(booking: Booking): Promise<void> {
   }
   booking.recordingStatus = 'processing';
   booking.recordingStoppedAt = new Date();
+  // A host stop on an auto record booking is final (Epic 9):
+  // once the host has stopped it, auto record never restarts
+  // for this booking. The host can still start a new
+  // recording by hand; it just will not start itself again.
+  if (booking.recordAutomatically === true && !booking.recordingAutoStoppedByHostAt) {
+    booking.recordingAutoStoppedByHostAt = new Date();
+  }
   await booking.save();
   logMeetingEvent('recording', {
     bookingId,
@@ -355,6 +362,87 @@ export async function stopRecording(booking: Booking): Promise<void> {
     action: 'stopped',
     detail: booking.recordingEgressId,
   });
+}
+
+export type AutoStartOutcome = 'started' | 'already' | 'skipped' | 'capacity' | 'failed';
+
+/**
+ * Auto record (Epic 9): start this booking's recording on
+ * its own. Called by both token routes right after a
+ * successful mint, which is the moment the meeting reaches
+ * its room: the mint only succeeds inside the room window,
+ * for a participant who is actually joining, so the first
+ * mint (host or guest, whoever arrives first) is the
+ * trigger, and recording is already starting when they land
+ * in the room. The indicator and the announcement banner
+ * read the same recording state as a manual start, so
+ * everyone, including the first guest in, sees the same
+ * thing either way.
+ *
+ * Guarantees:
+ *   - At most one auto start per booking. An atomic claim
+ *     (recordingAutoClaimedAt, taken only while the booking
+ *     is idle, unclaimed, and never host stopped) means two
+ *     mints in the same moment cannot both start an Egress
+ *     job; the loser hears 'already'.
+ *   - Capacity is respected through startRecording's own
+ *     lane check. A capacity refusal (or any other start
+ *     failure) hands the claim back, so a later mint can
+ *     retry; the meeting continues unrecorded meanwhile and
+ *     the host can still start recording by hand.
+ *   - A host stop is final: recordingAutoStoppedByHostAt is
+ *     stamped by stopRecording, and a booking carrying it
+ *     never auto starts again.
+ *
+ * Never throws: a mint must not fail because auto record
+ * could not start. The outcome is returned for tests and
+ * logging.
+ */
+export async function maybeAutoStartRecording(booking: Booking): Promise<AutoStartOutcome> {
+  const bookingId = bookingIdOf(booking);
+  try {
+    if (booking.recordAutomatically !== true) return 'skipped';
+    if (booking.recordingAutoStoppedByHostAt) return 'skipped';
+    const status = booking.recordingStatus ?? 'idle';
+    if (status === 'recording' || status === 'processing' || status === 'ready') return 'already';
+    if (status !== 'idle') return 'skipped';
+    const claim = await MeetBooking.updateOne(
+      {
+        _id: booking._id,
+        recordAutomatically: true,
+        recordingStatus: 'idle',
+        recordingAutoClaimedAt: null,
+        recordingAutoStoppedByHostAt: null,
+      },
+      { $set: { recordingAutoClaimedAt: new Date() } },
+    );
+    if (claim.modifiedCount === 0) return 'already';
+    booking.recordingAutoClaimedAt = new Date();
+    try {
+      await startRecording(booking);
+    } catch (error) {
+      await MeetBooking.updateOne(
+        { _id: booking._id },
+        { $unset: { recordingAutoClaimedAt: 1 } },
+      ).catch(() => undefined);
+      booking.recordingAutoClaimedAt = undefined;
+      if (error instanceof RecordingError && error.code === 'egress_capacity') return 'capacity';
+      return 'failed';
+    }
+    logMeetingEvent('recording', {
+      bookingId,
+      room: booking.roomId,
+      action: 'auto_started',
+      detail: booking.recordingEgressId,
+    });
+    return 'started';
+  } catch (error) {
+    logger.warn('auto record check failed; the mint stands', {
+      bookingId,
+      error: String(error),
+    });
+    return 'failed';
+  }
 }
 
 /**

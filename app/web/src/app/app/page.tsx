@@ -76,6 +76,7 @@ export default function Dashboard() {
   // it just made.
   const [instantTitle, setInstantTitle] = useState('');
   const [instantEntryMode, setInstantEntryMode] = useState<'open' | 'waiting_room'>('open');
+  const [instantRecord, setInstantRecord] = useState(false);
   const [instantBusy, setInstantBusy] = useState(false);
   const [instantCreated, setInstantCreated] = useState<Booking | null>(null);
   const [instantCopied, setInstantCopied] = useState(false);
@@ -138,7 +139,11 @@ export default function Dashboard() {
       const res = await fetch('/api/v0/instant-meetings', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ title: instantTitle, entryMode: instantEntryMode }),
+        body: JSON.stringify({
+          title: instantTitle,
+          entryMode: instantEntryMode,
+          recordAutomatically: instantRecord,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.booking) {
@@ -308,6 +313,15 @@ export default function Dashboard() {
             <option value="open">Anyone with the link joins</option>
             <option value="waiting_room">Waiting room, you let people in</option>
           </select>
+          <label className="flex items-center gap-2 text-sm text-text-secondary">
+            <input
+              type="checkbox"
+              data-testid="instant-record-toggle"
+              checked={instantRecord}
+              onChange={(e) => setInstantRecord(e.target.checked)}
+            />
+            Record automatically
+          </label>
           <button
             data-testid="start-instant-button"
             onClick={() => void startInstantMeeting()}

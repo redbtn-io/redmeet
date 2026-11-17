@@ -10,6 +10,7 @@ import {
   ensureBookingRoom,
   mintRoomTokenForBooking,
 } from '@/lib/rooms';
+import { maybeAutoStartRecording } from '@/lib/recording';
 import { MeetBooking } from '@/models/meet-booking';
 import { MeetType } from '@/models/meet-type';
 
@@ -59,6 +60,9 @@ export async function POST(
     const minted = await mintRoomTokenForBooking(booking, 'host', {
       displayName: typedName || host.displayName,
     });
+    // Auto record (Epic 9): the first mint inside the window
+    // starts the recording; later mints find it running.
+    await maybeAutoStartRecording(booking);
     return NextResponse.json({
       token: minted.token,
       url: minted.url,

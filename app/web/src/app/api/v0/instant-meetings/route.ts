@@ -28,7 +28,7 @@ export async function POST(request: Request): Promise<NextResponse> {
   if (!gated.ok) return gated.response;
   const host = await ensureHost(gated.user);
 
-  let body: { title?: unknown; entryMode?: unknown } = {};
+  let body: { title?: unknown; entryMode?: unknown; recordAutomatically?: unknown } = {};
   try {
     body = (await request.json()) as typeof body;
   } catch {
@@ -38,6 +38,10 @@ export async function POST(request: Request): Promise<NextResponse> {
   const title = typeof body.title === 'string' ? body.title : '';
 
   await getDb();
-  const booking = await createInstantMeeting(host, { title, entryMode });
+  const booking = await createInstantMeeting(host, {
+    title,
+    entryMode,
+    recordAutomatically: body.recordAutomatically === true,
+  });
   return NextResponse.json({ booking: bookingJson(booking) }, { status: 201 });
 }

@@ -204,6 +204,40 @@ describe.skipIf(!TEST_URI)('calendar write, retry, reconcile, cancel', () => {
     expect(JSON.stringify(args)).not.toContain(booking.hostJoinToken);
   }, 30000);
 
+  it('stamps auto record from the type and says so in the calendar event (Epic 9)', async () => {
+    insertFails = false;
+    const recType = await MeetType.create({
+      hostId: host._id,
+      slug: 'recorded-intro',
+      name: 'Recorded intro',
+      lengthMinutes: 30,
+      active: true,
+      sort: 1,
+      recordAutomatically: true,
+    });
+    const { slots } = await bookings.availabilityFor(host, recType, date);
+    expect(slots.length).toBeGreaterThan(0);
+    const booking = await bookings.createBooking(
+      host,
+      recType,
+      inputFor(slots[0]!.label, 'Recorded Guest'),
+    );
+    expect(booking.status).toBe('confirmed');
+    // The booking carries the resolved setting from its type,
+    // stamped at booking time.
+    expect(booking.recordAutomatically).toBe(true);
+    const recArgs = insertArgs[insertArgs.length - 1]!;
+    expect(String(recArgs.description)).toContain('This meeting will be recorded.');
+
+    // A booking of a type without the setting says nothing
+    // about recording, and carries the flag off.
+    const label = await firstFreeLabel();
+    const plain = await bookings.createBooking(host, type, inputFor(label, 'Plain Guest'));
+    expect(plain.recordAutomatically).toBe(false);
+    const plainArgs = insertArgs[insertArgs.length - 1]!;
+    expect(String(plainArgs.description)).not.toContain('will be recorded');
+  }, 30000);
+
   it('holds the slot on failure and lands the invite on manual retry', async () => {
     insertFails = true;
     const label = await firstFreeLabel();
