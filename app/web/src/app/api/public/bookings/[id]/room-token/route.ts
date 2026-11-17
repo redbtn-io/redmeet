@@ -12,6 +12,7 @@ import {
   ensureBookingRoom,
   mintRoomTokenForBooking,
 } from '@/lib/rooms';
+import { maybeAutoStartRecording } from '@/lib/recording';
 import { secretEquals } from '@/lib/session';
 import { MeetBooking } from '@/models/meet-booking';
 import { MeetType } from '@/models/meet-type';
@@ -75,6 +76,9 @@ export async function GET(
       displayName: typedName || booking.guestName,
       guestKey,
     });
+    // Auto record (Epic 9): a guest who arrives first starts
+    // the recording just the same; see the host token route.
+    await maybeAutoStartRecording(booking);
     return NextResponse.json({
       token: minted.token,
       url: minted.url,

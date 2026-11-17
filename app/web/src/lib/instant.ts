@@ -51,6 +51,8 @@ export async function createInstantMeeting(
   input: {
     title?: string;
     entryMode?: EntryMode;
+    /** Auto record (Epic 9): the host's choice at creation, default off. */
+    recordAutomatically?: boolean;
     settings?: Partial<MeetingSettings>;
     now?: Date;
   } = {},
@@ -76,6 +78,7 @@ export async function createInstantMeeting(
     closeLagMinutes: 0,
     extensionMinutes: settings.extensionMinutes,
     extensionsAllowed: settings.extensionsAllowed,
+    recordAutomatically: input.recordAutomatically ?? settings.recordAutomatically,
     roomExtensionsUsed: 0,
   });
   // Stamps the room fields, the share token, and roomExpiresAt

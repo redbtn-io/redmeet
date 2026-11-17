@@ -31,6 +31,7 @@ describe('meeting settings resolution (Epic 5)', () => {
       extensionMinutes: 30,
       extensionsAllowed: 1,
       instantLifetimeMinutes: 240,
+      recordAutomatically: false,
     });
   });
 

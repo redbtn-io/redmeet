@@ -115,6 +115,7 @@ export function meetingTypeJson(type: MeetTypeDoc) {
     lengthMinutes: type.lengthMinutes,
     active: type.active,
     entryMode: type.entryMode ?? 'open',
+    recordAutomatically: settings.recordAutomatically,
     participantLimit: settings.participantLimit,
     openLeadMinutes: settings.openLeadMinutes,
     closeLagMinutes: settings.closeLagMinutes,

@@ -104,5 +104,10 @@ export async function GET(
     // it carries the state and nothing else: no object key,
     // no Egress id, no file access of any kind (story 6.2.2).
     recording: recordingStateFor(booking),
+    // Epic 9: whether this meeting records automatically.
+    // The lobby shows it before the guest joins, so the
+    // notice lands before the recording does. A plain fact
+    // about the meeting, nothing about the machinery.
+    willRecord: booking.recordAutomatically === true,
   });
 }

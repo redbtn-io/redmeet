@@ -77,6 +77,12 @@ export interface JoinLobbyProps {
    * guests and for booked meetings.
    */
   inviteUrl?: string | null;
+  /**
+   * Auto record (Epic 9): the meeting records automatically.
+   * The lobby says so before anyone joins, so the notice
+   * lands before the recording does.
+   */
+  willRecord?: boolean;
 }
 
 type Screen = 'lobby' | 'connecting' | 'inroom' | 'left' | 'gone' | 'failed' | 'removed';
@@ -768,6 +774,12 @@ export function JoinLobby(props: JoinLobbyProps) {
       <p className="mt-2 text-sm text-text-secondary">
         with {props.hostName}, {props.dateLabel}, {props.timeLabel}
       </p>
+      {props.willRecord && (
+        <p className="mt-2 text-sm text-text-secondary" data-testid="will-record-note">
+          This meeting will be recorded. The recording starts automatically when the
+          meeting begins.
+        </p>
+      )}
 
       {mode === 'host' && props.inviteUrl && (
         <div

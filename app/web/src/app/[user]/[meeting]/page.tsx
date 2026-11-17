@@ -69,6 +69,7 @@ export default async function SchedulerPage({
           name: type.name,
           description: type.description,
           length: type.lengthMinutes,
+          willRecord: type.recordAutomatically === true,
         }}
       />
     </div>

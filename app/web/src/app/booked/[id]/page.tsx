@@ -121,6 +121,12 @@ export default async function BookedPage({
         <div className="rounded-2xl border border-border bg-bg-secondary p-8">
           <h1 className="text-2xl font-semibold">{heading}</h1>
           <p className="mt-2 text-sm text-text-secondary">{calendarLine}</p>
+          {booking.recordAutomatically === true && booking.status !== 'cancelled' && (
+            <p className="mt-2 text-sm text-text-secondary">
+              This meeting will be recorded. The recording starts automatically when the
+              meeting begins.
+            </p>
+          )}
 
           <dl className="mt-6 space-y-3 text-sm">
             <div className="flex gap-3">

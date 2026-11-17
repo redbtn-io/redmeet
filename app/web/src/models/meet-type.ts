@@ -44,6 +44,13 @@ export interface MeetTypeDoc {
    * exactly as it did when the numbers were constants.
    * Bookings copy the resolved values at booking time.
    */
+  /**
+   * Auto record (Epic 9): bookings of this type record
+   * automatically. Optional like the settings below: unset
+   * resolves to the default (off) in lib/meeting-settings.ts.
+   * Bookings copy the resolved value at booking time.
+   */
+  recordAutomatically?: boolean;
   participantLimit?: number;
   openLeadMinutes?: number;
   closeLagMinutes?: number;
@@ -64,6 +71,7 @@ const meetTypeSchema = new Schema<MeetTypeDoc>(
     sort: { type: Number, default: 0 },
     roomProvider: { type: String, default: 'livekit' },
     entryMode: { type: String, enum: ['open', 'waiting_room'], default: 'open' },
+    recordAutomatically: Boolean,
     participantLimit: Number,
     openLeadMinutes: Number,
     closeLagMinutes: Number,

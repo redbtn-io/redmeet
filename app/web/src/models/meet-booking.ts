@@ -200,6 +200,23 @@ export interface MeetBookingDoc {
    * config, and the file itself is only ever served through
    * the host gated playback route, never a public URL.
    */
+  /**
+   * Auto record (Epic 9): copied from the meeting type at
+   * booking time (instant meetings: the host's choice at
+   * creation). Default off; records written before the field
+   * existed read as off. When on, the first token mint inside
+   * the room window starts the recording on its own through
+   * lib/recording.ts maybeAutoStartRecording.
+   */
+  recordAutomatically: boolean;
+  /** When the auto start claim was taken (Epic 9). Set only
+   *  while an auto start is in flight or has succeeded; a
+   *  failed attempt clears it so a later mint can retry. */
+  recordingAutoClaimedAt?: Date;
+  /** When the host stopped an auto started recording (Epic
+   *  9). Once set, auto record never restarts for this
+   *  booking: the host's stop is the final word. */
+  recordingAutoStoppedByHostAt?: Date;
   recordingStatus: RecordingStatus;
   /** The LiveKit Egress job id for this booking's recording. */
   recordingEgressId?: string;
@@ -299,6 +316,9 @@ const meetBookingSchema = new Schema<MeetBookingDoc>(
     },
     removedIdentities: { type: [String], default: [] },
     roomEndedAt: Date,
+    recordAutomatically: { type: Boolean, default: false },
+    recordingAutoClaimedAt: Date,
+    recordingAutoStoppedByHostAt: Date,
     recordingStatus: {
       type: String,
       enum: ['idle', 'recording', 'processing', 'ready', 'failed'],

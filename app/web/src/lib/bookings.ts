@@ -185,6 +185,10 @@ export async function attemptCalendarWrite(
           `${booking.guestName}${booking.guestPhone ? `, ${booking.guestPhone}` : ''}`,
           booking.comments ? `Comments: ${booking.comments}` : '',
           joinUrl ? `Join: ${joinUrl}` : '',
+          // Advance notice (Epic 9): a guest who reads the
+          // calendar event learns the meeting will be
+          // recorded before it happens, in plain words.
+          booking.recordAutomatically ? 'This meeting will be recorded.' : '',
           `Booked via redMeet (https://meet.redbtn.io/${host.slug}/${type.slug})`,
         ]
           .filter(Boolean)
@@ -279,6 +283,7 @@ export async function createBooking(
           end: new Date(slot.endMs),
           status: 'pending_calendar',
           entryMode: type.entryMode ?? 'open',
+          recordAutomatically: typeSettings.recordAutomatically,
           // The behavior settings the booking will run with
           // (Epic 5): resolved from the meeting type at claim
           // time, so the booking carries its own numbers even
@@ -457,6 +462,7 @@ export function bookingJson(booking: MeetBookingDoc, type?: MeetTypeDoc) {
     // host's dashboard gets the link they share. The HOST join
     // token is not here; the host's path is their session.
     entryMode: booking.entryMode ?? 'open',
+    recordAutomatically: booking.recordAutomatically ?? false,
     roomId: booking.roomId ?? null,
     roomUrl: booking.roomUrl ?? null,
     roomStatus: booking.roomStatus ?? 'not_created',

@@ -45,6 +45,15 @@ export interface MeetingSettings {
    * still push the close later, like any meeting).
    */
   instantLifetimeMinutes: number;
+  /**
+   * Auto record (Epic 9): a meeting with this on starts
+   * recording on its own when the first participant's token
+   * is minted inside the room window. A meeting type setting,
+   * default off; bookings and instant meetings copy the
+   * resolved value at creation, so changing a type never
+   * changes a meeting that already exists.
+   */
+  recordAutomatically: boolean;
 }
 
 /** The defaults, today's behavior, in the one place they live. */
@@ -55,6 +64,7 @@ export const MEETING_SETTING_DEFAULTS: MeetingSettings = {
   extensionMinutes: 30,
   extensionsAllowed: 1,
   instantLifetimeMinutes: 240,
+  recordAutomatically: false,
 };
 
 /** Anything that can carry the settings fields: a meeting type or a booking. */
@@ -64,6 +74,10 @@ function pickInt(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
     ? Math.floor(value)
     : fallback;
+}
+
+function pickBool(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 function pickCount(value: unknown, fallback: number): number {
@@ -94,6 +108,10 @@ export function resolveMeetingSettings(source: MeetingSettingsSource): MeetingSe
     instantLifetimeMinutes: pickInt(
       source?.instantLifetimeMinutes,
       MEETING_SETTING_DEFAULTS.instantLifetimeMinutes,
+    ),
+    recordAutomatically: pickBool(
+      source?.recordAutomatically,
+      MEETING_SETTING_DEFAULTS.recordAutomatically,
     ),
   };
 }

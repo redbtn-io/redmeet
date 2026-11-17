@@ -16,6 +16,8 @@ export interface FlowMeeting {
   name: string;
   description: string;
   length: number;
+  /** Auto record (Epic 9): the guest is told before they book. */
+  willRecord?: boolean;
 }
 
 interface DayCell {
@@ -148,6 +150,12 @@ export default function BookingFlow({
               {meeting.description || `Meet with ${hostName}.`}
             </p>
             <p className="mt-1 text-sm text-text-secondary">{meeting.length} minutes</p>
+            {meeting.willRecord && (
+              <p className="mt-1 text-sm text-text-secondary">
+                This meeting will be recorded. The recording starts automatically when the
+                meeting begins.
+              </p>
+            )}
           </div>
           <br />
           <DatePicker

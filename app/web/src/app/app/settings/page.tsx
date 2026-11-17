@@ -38,6 +38,8 @@ interface MeetingType {
   description: string;
   lengthMinutes: number;
   entryMode: 'open' | 'waiting_room';
+  /** Auto record (Epic 9), served resolved by the API. */
+  recordAutomatically: boolean;
   /** Behavior settings (Epic 5), served resolved by the API. */
   participantLimit: number;
   openLeadMinutes: number;
@@ -102,6 +104,7 @@ export default function Settings() {
     description: '',
     lengthMinutes: 30,
     entryMode: 'open' as 'open' | 'waiting_room',
+    recordAutomatically: false,
     participantLimit: 10,
     openLeadMinutes: 5,
     closeLagMinutes: 15,
@@ -158,6 +161,7 @@ export default function Settings() {
       description: '',
       lengthMinutes: 30,
       entryMode: 'open',
+      recordAutomatically: false,
       participantLimit: 10,
       openLeadMinutes: 5,
       closeLagMinutes: 15,
@@ -291,6 +295,7 @@ export default function Settings() {
                 <p className="truncate text-xs text-text-secondary">
                   {t.lengthMinutes} min{t.description ? `, ${t.description}` : ''}
                   {t.entryMode === 'waiting_room' ? ', waiting room' : ''}
+                  {t.recordAutomatically ? ', records automatically' : ''}
                   {`, up to ${t.participantLimit} people`}
                 </p>
               </div>
@@ -321,6 +326,15 @@ export default function Settings() {
                 Delete
               </button>
               <div className="flex w-full flex-wrap items-center gap-3 text-xs text-text-secondary">
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    aria-label={`Record automatically for ${t.name}`}
+                    checked={t.recordAutomatically}
+                    onChange={(e) => void patchType(t.id, { recordAutomatically: e.target.checked })}
+                  />
+                  Record automatically
+                </label>
                 <label className="flex items-center gap-2">
                   People (max)
                   <input
@@ -506,6 +520,15 @@ export default function Settings() {
               value={draft.extensionsAllowed}
               onChange={(e) => setDraft({ ...draft, extensionsAllowed: Number(e.target.value) })}
             />
+          </label>
+          <label className="flex items-center gap-2 text-xs text-text-secondary">
+            <input
+              type="checkbox"
+              aria-label="Record automatically for the new meeting type"
+              checked={draft.recordAutomatically}
+              onChange={(e) => setDraft({ ...draft, recordAutomatically: e.target.checked })}
+            />
+            Record automatically
           </label>
           <button type="submit" className="rounded-xl bg-accent px-5 py-2.5 text-sm font-medium text-white transition hover:brightness-110 active:scale-[0.98]">
             Add type

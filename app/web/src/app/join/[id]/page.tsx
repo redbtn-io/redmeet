@@ -219,6 +219,7 @@ export default async function JoinPage({
         closesAt={roomClosesAt(booking).toISOString()}
         entryMode={booking.entryMode ?? 'open'}
         kind={booking.kind ?? 'booked'}
+        willRecord={booking.recordAutomatically === true}
         inviteUrl={
           hostMode && booking.kind === 'instant' ? guestJoinUrlFor(booking) : null
         }
