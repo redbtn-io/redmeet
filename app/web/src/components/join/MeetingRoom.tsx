@@ -27,6 +27,7 @@ import {
   Users,
   Video,
   VideoOff,
+  Volume2,
 } from 'lucide-react';
 import { BottomSheet } from '@redbtn/redlabel/ui/BottomSheet';
 
@@ -398,6 +399,11 @@ export function MeetingRoom(props: MeetingRoomProps) {
   const [toasts, setToasts] = useState<Toast[]>([]);
   // Which sheet is open: People, Devices, or More. One at a time.
   const [sheet, setSheet] = useState<SheetName | null>(null);
+  // iOS Safari (and any browser with a strict autoplay policy)
+  // refuses to play remote audio that was not started by a tap.
+  // LiveKit reports that as canPlaybackAudio=false; until a tap
+  // calls room.startAudio(), the participant hears nobody.
+  const [audioBlocked, setAudioBlocked] = useState(!room.canPlaybackAudio);
   // Background blur: the wish (remembered in this browser), and
   // whether this browser can do it at all (hidden when not).
   const [blurOn, setBlurOn] = useState(() => loadBlurPreference());
@@ -736,6 +742,16 @@ export function MeetingRoom(props: MeetingRoomProps) {
     room.on(RoomEvent.ConnectionQualityChanged, onQuality);
     room.on(RoomEvent.ConnectionStateChanged, onConnState);
     room.on(RoomEvent.MediaDevicesChanged, onDevicesChanged);
+    const onAudioPlayback = () => setAudioBlocked(!room.canPlaybackAudio);
+    room.on(RoomEvent.AudioPlaybackStatusChanged, onAudioPlayback);
+    onAudioPlayback();
+    // Any tap anywhere in the room counts as the gesture iOS
+    // wants: unlock audio on it, so most people never even see
+    // the prompt.
+    const unlockAudio = () => {
+      if (!room.canPlaybackAudio) void room.startAudio().catch(() => undefined);
+    };
+    document.addEventListener('pointerdown', unlockAudio, true);
     navigator.mediaDevices?.addEventListener?.(
       'devicechange',
       onDevicesChanged,
@@ -760,6 +776,8 @@ export function MeetingRoom(props: MeetingRoomProps) {
       room.off(RoomEvent.ConnectionQualityChanged, onQuality);
       room.off(RoomEvent.ConnectionStateChanged, onConnState);
       room.off(RoomEvent.MediaDevicesChanged, onDevicesChanged);
+      room.off(RoomEvent.AudioPlaybackStatusChanged, onAudioPlayback);
+      document.removeEventListener('pointerdown', unlockAudio, true);
       navigator.mediaDevices?.removeEventListener?.(
         'devicechange',
         onDevicesChanged,
@@ -1416,6 +1434,23 @@ export function MeetingRoom(props: MeetingRoomProps) {
                 </div>
               </div>
             ))}
+
+          {audioBlocked && (
+            <button
+              type="button"
+              data-testid="enable-audio-button"
+              onClick={() => {
+                void room
+                  .startAudio()
+                  .then(() => setAudioBlocked(!room.canPlaybackAudio))
+                  .catch(() => undefined);
+              }}
+              className="rm-rise pointer-events-auto flex items-center gap-2 rounded-full bg-[var(--primary-color)] px-5 py-3 text-sm font-semibold text-white shadow-xl transition hover:opacity-90 active:scale-95"
+            >
+              <Volume2 className="h-4 w-4" aria-hidden />
+              Tap to turn on sound
+            </button>
+          )}
 
           {alone && connBadge === 'connected' && (
             <div
