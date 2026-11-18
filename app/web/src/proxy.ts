@@ -48,6 +48,16 @@ function isExempt(pathname: string): boolean {
   // and the iOS touch icon to the sign-in host, a broken image on the
   // landing page and an uninstallable PWA.
   if (pathname.startsWith('/brand/')) return true;
+  // Background blur assets (the MediaPipe wasm and the segmentation
+  // model): a signed-out guest blurs too, so these must load without a
+  // session. Exact file shapes only, nothing else under the prefix.
+  if (
+    /^\/mediapipe\/(wasm\/vision_wasm_(nosimd_)?internal\.(js|wasm)|selfie_segmenter\.tflite)$/.test(
+      pathname,
+    )
+  ) {
+    return true;
+  }
   if (pathname === '/apple-touch-icon.png') return true;
   // Public booking pages: /<slug> and /<slug>/<meeting>. Guests have no
   // account, that is the point of the product. A first segment from
@@ -87,9 +97,15 @@ function contentSecurityPolicy(_nonce: string): string {
   // (self.__next_f.push) WITHOUT nonces — a nonce in script-src makes
   // browsers IGNORE 'unsafe-inline', silently disabling the directive meant
   // to allow the Flight data. So: 'self' + 'unsafe-inline', no nonce.
+  // Background blur (MediaPipe selfie segmentation, self hosted under
+  // /mediapipe/) compiles WebAssembly, which needs 'wasm-unsafe-eval'
+  // (NOT 'unsafe-eval': JS eval stays blocked). The processor's frame
+  // ticker is a tiny blob: worker so blur keeps running in a
+  // background tab, hence worker-src blob:.
   return [
     "default-src 'self'",
-    "script-src 'self' 'unsafe-inline'",
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+    "worker-src 'self' blob:",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
     "font-src 'self' data:",

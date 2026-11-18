@@ -91,6 +91,36 @@
   .animate-confetti { animation: none; display: none; }
 }
 
+/* ---------- meeting room ---------- */
+
+/* The speaking equaliser bars on a participant tile. */
+@keyframes rm-eq {
+  0%, 100% { height: 30%; }
+  50% { height: 100%; }
+}
+
+/* Toasts and floating notices rise in from below. */
+@keyframes rm-rise {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.rm-rise {
+  animation: rm-rise 0.22s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Hide the filmstrip scrollbar; it still scrolls by touch and wheel. */
+.rm-strip {
+  scrollbar-width: none;
+}
+.rm-strip::-webkit-scrollbar {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rm-rise { animation: none; }
+  [class*="animate-[rm-eq"] { animation: none; height: 60%; }
+}
+
 /* ---------- accessibility ---------- */
 
 /* Visually-hidden content that stays available to screen readers. */

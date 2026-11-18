@@ -5,29 +5,47 @@ import {
   ConnectionQuality,
   RoomEvent,
   Track,
+  type LocalVideoTrack,
   type Participant,
   type RemoteParticipant,
   type Room,
 } from 'livekit-client';
 import {
+  Check,
+  ChevronRight,
+  Circle,
   Link2,
   Mic,
   MicOff,
   MonitorUp,
   MonitorX,
+  MoreVertical,
   PhoneOff,
   Settings2,
+  Sparkles,
+  Square,
   Users,
   Video,
   VideoOff,
 } from 'lucide-react';
+import { BottomSheet } from '@redbtn/redlabel/ui/BottomSheet';
 
+import {
+  applyBlur,
+  blurSupported,
+  hasBlur,
+  loadBlurPreference,
+  saveBlurPreference,
+} from '@/lib/background-blur';
 import { saveDeviceMemory, type DeviceMemory } from '@/lib/device-memory';
 import {
+  colorForIdentity,
   displacedShareNotice,
-  gridLayout,
+  fitGrid,
+  initialsFor,
   pickFallbackDevice,
   resolveDisplayedShare,
+  tileAspectFor,
   type ShareRef,
 } from '@/lib/room-ui';
 import { ParticipantTile, type TileView } from './ParticipantTile';
@@ -71,6 +89,26 @@ import { ParticipantTile, type TileView } from './ParticipantTile';
  * with Admit and Deny, polled from the host gated waiting
  * endpoint. Mute all and End meeting both take a confirm
  * step before anything is sent.
+ *
+ * Layout (the polish pass): the room is a full screen call
+ * surface, not a card on a page. A thin top bar carries the
+ * meeting name, the recording pill and the connection badge;
+ * the stage fills everything between it and a single row of
+ * round controls. Two people get the call layout (the other
+ * person full stage, you in a corner you can tap to swap);
+ * three or more get a best-fit grid measured from the real
+ * stage size, so a phone stacks tiles and a laptop lines them
+ * up. Notices float over the stage instead of pushing it down.
+ * Everything that is not a primary control lives in sheets
+ * (redlabel BottomSheet: a bottom sheet on phones, a side
+ * drawer on desktop): People, Devices, and More. Confirms
+ * are a small dialog, never inline text in the control bar.
+ *
+ * Background blur: a LiveKit track processor (MediaPipe,
+ * self hosted, see lib/background-blur.ts) on the local
+ * camera track. The wish is remembered in this browser and
+ * re-asserted whenever the camera track is republished, so it
+ * survives camera off and on and device switches.
  */
 
 export interface MeetingRoomProps {
@@ -95,6 +133,13 @@ export interface MeetingRoomProps {
   meetingName: string;
   hostName: string;
   initialDevices: DeviceMemory;
+  /**
+   * Something the join itself needs to tell the participant,
+   * shown as a toast on arrival (for example: blur could not
+   * start, so the camera was left off rather than shown
+   * unblurred).
+   */
+  initialNotice?: string | null;
   onLeave: () => void;
   /** The host ended the meeting; JoinLobby owns the ended screen. */
   onEnded: () => void;
@@ -150,7 +195,7 @@ function ShareStage({ share }: { share: ShareView }) {
     <div
       data-testid="share-stage"
       data-owner={share.ownerIdentity}
-      className="relative aspect-video w-full overflow-hidden rounded-xl bg-black shadow-[0_0_0_1px_rgba(255,255,255,0.12)]"
+      className="relative h-full w-full overflow-hidden rounded-2xl bg-black shadow-[0_0_0_1px_rgba(255,255,255,0.08)]"
     >
       <video
         ref={videoRef}
@@ -160,7 +205,8 @@ function ShareStage({ share }: { share: ShareView }) {
         data-testid="share-video"
         className="h-full w-full object-contain"
       />
-      <span className="absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1 text-xs font-medium text-white">
+      <span className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/60 px-3 py-1 text-xs font-medium text-white backdrop-blur-sm">
+        <MonitorUp className="h-3.5 w-3.5" aria-hidden />
         {share.isLocal
           ? 'You are sharing your screen'
           : `${share.ownerName} is sharing their screen`}
@@ -168,6 +214,175 @@ function ShareStage({ share }: { share: ShareView }) {
     </div>
   );
 }
+
+/** One round control in the bottom bar. */
+function ControlButton({
+  label,
+  tone = 'neutral',
+  onClick,
+  children,
+  className = '',
+  ...rest
+}: {
+  label: string;
+  tone?: 'neutral' | 'off' | 'active' | 'danger';
+  onClick: () => void;
+  children: React.ReactNode;
+  className?: string;
+} & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'onClick' | 'className'>) {
+  const tones = {
+    neutral: 'bg-white/10 text-white hover:bg-white/20',
+    off: 'bg-red-600 text-white hover:bg-red-500',
+    active: 'bg-[var(--primary-color)] text-white hover:opacity-90',
+    danger: 'bg-red-600 text-white hover:bg-red-500',
+  } as const;
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      className={`relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full transition active:scale-95 disabled:opacity-50 ${tones[tone]} ${className}`}
+      {...rest}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** One row in the More sheet: icon, label, optional detail, chevron or state. */
+function SheetRow({
+  icon,
+  label,
+  detail,
+  onClick,
+  danger = false,
+  trailing,
+  ...rest
+}: {
+  icon: React.ReactNode;
+  label: string;
+  detail?: string;
+  onClick: () => void;
+  danger?: boolean;
+  trailing?: React.ReactNode;
+} & Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'onClick'>) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition hover:bg-bg-hover disabled:opacity-50 ${
+        danger ? 'text-red-400' : 'text-text-primary'
+      }`}
+      {...rest}
+    >
+      <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-bg-hover">
+        {icon}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium">{label}</span>
+        {detail && <span className="block text-xs text-text-muted">{detail}</span>}
+      </span>
+      {trailing ?? <ChevronRight className="h-4 w-4 shrink-0 text-text-muted" aria-hidden />}
+    </button>
+  );
+}
+
+/** An on and off switch, for rows that toggle in place. */
+function Switch({ on }: { on: boolean }) {
+  return (
+    <span
+      aria-hidden
+      className={`relative inline-flex h-6 w-10 shrink-0 rounded-full transition ${
+        on ? 'bg-[var(--primary-color)]' : 'bg-white/15'
+      }`}
+    >
+      <span
+        className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-[left] ${
+          on ? 'left-[1.125rem]' : 'left-0.5'
+        }`}
+      />
+    </span>
+  );
+}
+
+/** The small confirm dialog for actions that affect everyone. */
+function ConfirmDialog({
+  title,
+  body,
+  confirmLabel,
+  confirmTestId,
+  busy = false,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  body: string;
+  confirmLabel: string;
+  confirmTestId: string;
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  const confirmRef = useRef<HTMLButtonElement | null>(null);
+  // The room re-renders every second while recording (the
+  // clock), handing a fresh onCancel each time; a ref keeps
+  // this effect to mount only, so focus is set once and stays
+  // wherever the user moves it.
+  const onCancelRef = useRef(onCancel);
+  onCancelRef.current = onCancel;
+  useEffect(() => {
+    confirmRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onCancelRef.current();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end justify-center p-3 sm:items-center">
+      <div aria-hidden className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
+      <div
+        role="alertdialog"
+        aria-modal="true"
+        aria-label={title}
+        className="rm-rise relative w-full max-w-sm rounded-2xl border border-white/10 bg-zinc-900 p-5 text-white shadow-2xl"
+        style={{ marginBottom: 'env(safe-area-inset-bottom)' }}
+      >
+        <h2 className="text-base font-semibold">{title}</h2>
+        <p className="mt-1.5 text-sm text-white/70">{body}</p>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-full px-4 py-2 text-sm font-medium text-white/80 transition hover:bg-white/10"
+          >
+            Cancel
+          </button>
+          <button
+            ref={confirmRef}
+            type="button"
+            data-testid={confirmTestId}
+            disabled={busy}
+            onClick={onConfirm}
+            className="rounded-full bg-red-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-red-500 disabled:opacity-50"
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+type SheetName = 'people' | 'devices' | 'more';
+
+/**
+ * redlabel's sheet surface is a translucent overlay token, which over
+ * live video lets the picture bleed through the rows. The room's
+ * sheets are solid.
+ */
+const ROOM_SHEET_CLASS = 'bg-zinc-900! border-white/10!';
 
 export function MeetingRoom(props: MeetingRoomProps) {
   const { room, onLeave } = props;
@@ -181,9 +396,25 @@ export function MeetingRoom(props: MeetingRoomProps) {
   const [localPoor, setLocalPoor] = useState(false);
   const [camPausedNotice, setCamPausedNotice] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [devicesOpen, setDevicesOpen] = useState(false);
+  // Which sheet is open: People, Devices, or More. One at a time.
+  const [sheet, setSheet] = useState<SheetName | null>(null);
+  // Background blur: the wish (remembered in this browser), and
+  // whether this browser can do it at all (hidden when not).
+  const [blurOn, setBlurOn] = useState(() => loadBlurPreference());
+  const [blurAvailable, setBlurAvailable] = useState(false);
+  // Two person call layout: who is in the big frame. False is
+  // the other person, true is you (tap the corner to swap).
+  const [selfFeatured, setSelfFeatured] = useState(false);
+  // The stage box, measured, so the grid fits the real space.
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  // Screen share needs getDisplayMedia, which phones lack.
+  const [canShare] = useState(
+    () =>
+      typeof navigator !== 'undefined' &&
+      typeof navigator.mediaDevices?.getDisplayMedia === 'function',
+  );
   // Epic 4 host controls.
-  const [peopleOpen, setPeopleOpen] = useState(false);
   const [hostMuted, setHostMuted] = useState(false);
   const [confirmMuteAll, setConfirmMuteAll] = useState(false);
   const [confirmEnd, setConfirmEnd] = useState(false);
@@ -834,7 +1065,114 @@ export function MeetingRoom(props: MeetingRoomProps) {
     sync();
   }
 
-  const layout = gridLayout(tiles.length);
+  // The join's own notice, once, on arrival.
+  const initialNoticeRef = useRef(props.initialNotice ?? null);
+  useEffect(() => {
+    if (initialNoticeRef.current) pushToast(initialNoticeRef.current);
+    initialNoticeRef.current = null;
+  }, [pushToast]);
+
+  // Can this browser blur at all? Resolved once; the toggle
+  // stays hidden where it cannot work.
+  useEffect(() => {
+    let cancelled = false;
+    void blurSupported().then((ok) => {
+      if (!cancelled) setBlurAvailable(ok);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Keep the camera track's processor in line with the wish.
+  // One change at a time; the loop picks up a wish that flipped
+  // while a change was in flight. Re-run on every camera
+  // republish (camera back on, device switch), so the blur
+  // survives them. A processor that fails turns the wish off
+  // and says so, never a silently unblurred camera.
+  const blurOnRef = useRef(blurOn);
+  blurOnRef.current = blurOn;
+  const blurWorkingRef = useRef(false);
+  const ensureBlur = useCallback(async () => {
+    if (blurWorkingRef.current) return;
+    blurWorkingRef.current = true;
+    try {
+      if (!(await blurSupported())) return;
+      for (let i = 0; i < 3; i++) {
+        const track = room.localParticipant.getTrackPublication(Track.Source.Camera)
+          ?.track as LocalVideoTrack | undefined;
+        if (!track) return;
+        const want = blurOnRef.current;
+        if (hasBlur(track) === want) return;
+        await applyBlur(track, want);
+      }
+    } catch {
+      setBlurOn(false);
+      saveBlurPreference(false);
+      pushToast(
+        'Background blur could not start on this device, so your camera is showing without it.',
+      );
+    } finally {
+      blurWorkingRef.current = false;
+    }
+  }, [room, pushToast]);
+  useEffect(() => {
+    void ensureBlur();
+  }, [ensureBlur, blurOn, camEnabled, camId]);
+
+  function toggleBlur() {
+    const next = !blurOn;
+    setBlurOn(next);
+    saveBlurPreference(next);
+  }
+
+  // The room is the whole screen while it is up: no page
+  // scroll behind it (iOS would otherwise rubber band the call).
+  useEffect(() => {
+    const html = document.documentElement;
+    const previous = html.style.overflow;
+    html.style.overflow = 'hidden';
+    return () => {
+      html.style.overflow = previous;
+    };
+  }, []);
+
+  // Measure the stage so the grid fits the space it really has.
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const update = () => {
+      const r = el.getBoundingClientRect();
+      setStageSize({ width: Math.round(r.width), height: Math.round(r.height) });
+    };
+    update();
+    const observer = new ResizeObserver(update);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  function copyInvite() {
+    void navigator.clipboard
+      .writeText(props.inviteUrl ?? '')
+      .then(() => {
+        setInviteCopied(true);
+        pushToast('Invite link copied');
+        setTimeout(() => setInviteCopied(false), 2000);
+      })
+      .catch(() => pushToast('Could not copy the invite link'));
+  }
+
+  async function decideGuest(
+    waiting: { identity: string | null; name: string },
+    action: 'admit' | 'deny',
+  ) {
+    const data = await moderate(action, waiting.identity ?? undefined);
+    if (data) {
+      setWaitingGuests((list) => list.filter((w) => w.identity !== waiting.identity));
+      pushToast(action === 'admit' ? 'Guest admitted' : 'Guest denied');
+    }
+  }
+
   const deviceLabel = (d: MediaDeviceInfo, kind: string, i: number) =>
     d.label || `${kind} ${i + 1}`;
 
@@ -846,503 +1184,598 @@ export function MeetingRoom(props: MeetingRoomProps) {
       : connBadge === 'connecting'
         ? 'Connecting...'
         : 'Reconnecting...';
+  const badgeHealthy = connBadge === 'connected' && !localPoor;
 
-  const tileGrid = (compact: boolean) =>
-    tiles.map((tile) => (
-      <div
-        key={tile.identity}
-        className={compact ? 'w-36 shrink-0 sm:w-44' : 'min-w-0'}
-      >
-        <ParticipantTile view={tile} compact={compact} />
-      </div>
-    ));
+  const micLive = micEnabled && !hostMuted;
+  const portrait = stageSize.height > stageSize.width;
+  const localTile = tiles.find((t) => t.isLocal) ?? null;
+  const remoteTile = tiles.find((t) => !t.isLocal) ?? null;
+  const twoUp = !displayedShare && tiles.length === 2 && localTile && remoteTile;
+  const featuredTile = selfFeatured ? localTile : remoteTile;
+  const cornerTile = selfFeatured ? remoteTile : localTile;
+  const grid = fitGrid(
+    tiles.length,
+    stageSize.width,
+    stageSize.height,
+    tileAspectFor(stageSize.width, stageSize.height),
+    8,
+  );
+  const alone = tiles.length === 1;
+
+  const noticeClass =
+    'rm-rise pointer-events-auto flex w-full max-w-md flex-wrap items-center gap-x-3 gap-y-2 rounded-2xl border border-white/10 bg-zinc-900/90 px-4 py-3 text-sm text-white shadow-xl backdrop-blur-md';
+  const noticeButton =
+    'rounded-full bg-white/10 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-white/20';
+  const selectClass =
+    'mt-1 w-full rounded-xl border border-border bg-bg px-3 py-2.5 text-sm text-text-primary';
 
   return (
     <div
-      className="relative left-1/2 w-[min(72rem,calc(100vw-3rem))] -translate-x-1/2 rounded-2xl border border-border bg-bg-secondary p-4 sm:p-6"
+      className="dark fixed inset-0 z-40 flex flex-col bg-[#0b0b0d] text-white"
+      style={{
+        paddingTop: 'env(safe-area-inset-top)',
+        paddingLeft: 'env(safe-area-inset-left)',
+        paddingRight: 'env(safe-area-inset-right)',
+      }}
       data-testid="meeting-room"
     >
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-xl font-semibold sm:text-2xl">
-            {props.meetingName}
-          </h1>
-          <p className="mt-1 text-sm text-text-secondary">
-            with {props.hostName}, {tiles.length}{' '}
-            {tiles.length === 1 ? 'person' : 'people'} in the meeting
+      <header className="flex h-14 shrink-0 items-center gap-3 px-4 sm:px-5">
+        <div className="min-w-0 flex-1">
+          <h1 className="truncate text-sm font-semibold sm:text-base">{props.meetingName}</h1>
+          <p className="truncate text-xs text-white/55">
+            with {props.hostName} · {tiles.length}{' '}
+            {tiles.length === 1 ? 'person' : 'people'}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          {recordingStatus === 'recording' && (
-            <span
-              className="flex items-center gap-2 rounded-full bg-red-600/20 px-3 py-1 text-xs font-medium text-red-300"
-              data-testid="recording-indicator"
-              role="status"
-            >
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
-              </span>
-              Recording {formatElapsed(recordElapsed)}
-            </span>
-          )}
+        {recordingStatus === 'recording' && (
           <span
-            className="rounded-full bg-black/25 px-3 py-1 text-xs font-medium"
-            data-testid="connected-badge"
-          >
-            {badgeText}
-          </span>
-        </div>
-      </div>
-
-      {recordingAnnouncement && recordingStatus === 'recording' && (
-        <div
-          className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-red-500/50 px-3 py-2"
-          data-testid="recording-announcement"
-          role="status"
-        >
-          <p className="text-sm text-text-secondary">
-            <span className="font-medium text-text-primary">This meeting is being recorded.</span>{' '}
-            Recording is on, and everyone in the meeting can see it. The recording belongs to
-            the host and will sit on the booking in their dashboard.
-          </p>
-          <button
-            type="button"
-            onClick={() => setRecordingAnnouncement(false)}
-            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition hover:text-text-primary"
-          >
-            Got it
-          </button>
-        </div>
-      )}
-
-      {connBadge === 'reconnecting' && (
-        <p
-          className="mt-4 rounded-lg border border-amber-400/40 px-3 py-2 text-sm text-text-secondary"
-          data-testid="reconnecting-banner"
-          role="status"
-        >
-          Your connection dropped. Reconnecting now, you will be back in the
-          meeting in a moment, stay on this page.
-        </p>
-      )}
-
-      {camPausedNotice && (
-        <div
-          className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-amber-400/40 px-3 py-2"
-          data-testid="camera-paused-notice"
-          role="status"
-        >
-          <p className="text-sm text-text-secondary">
-            Your connection is slow, so your camera was turned off to keep
-            your audio clear.
-          </p>
-          <button
-            type="button"
-            data-testid="camera-back-on"
-            onClick={() => void toggleCamera()}
-            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition hover:text-text-primary"
-          >
-            Turn camera back on
-          </button>
-          <button
-            type="button"
-            onClick={() => setCamPausedNotice(false)}
-            className="rounded-lg px-2 py-1.5 text-sm text-text-secondary transition hover:text-text-primary"
-          >
-            Dismiss
-          </button>
-        </div>
-      )}
-
-      {hostMuted && (
-        <div
-          className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2"
-          data-testid="host-muted-notice"
-          role="status"
-        >
-          <p className="text-sm text-text-secondary">
-            The host muted you. You can unmute yourself whenever you are ready.
-          </p>
-          <button
-            type="button"
-            data-testid="host-unmute-button"
-            onClick={() => void unmuteAfterHostMute()}
-            className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition hover:text-text-primary"
-          >
-            Unmute
-          </button>
-        </div>
-      )}
-
-      {props.isHost &&
-        waitingGuests.map((waiting) => (
-          <div
-            key={waiting.identity ?? 'the-guest'}
-            className="mt-4 flex flex-wrap items-center gap-3 rounded-lg border border-border px-3 py-2"
-            data-testid="waiting-panel"
+            className="flex shrink-0 items-center gap-2 rounded-full bg-red-600/20 px-3 py-1 text-xs font-medium text-red-300"
+            data-testid="recording-indicator"
             role="status"
           >
-            <p className="text-sm text-text-secondary">
-              <span className="font-medium text-text-primary">{waiting.name}</span>{' '}
-              is waiting to join
-            </p>
-            <button
-              type="button"
-              data-testid="admit-button"
-              onClick={() => {
-                void (async () => {
-                  const data = await moderate('admit', waiting.identity ?? undefined);
-                  if (data) {
-                    setWaitingGuests((list) =>
-                      list.filter((w) => w.identity !== waiting.identity),
-                    );
-                    pushToast('Guest admitted');
-                  }
-                })();
-              }}
-              className="rounded-lg bg-[var(--primary-color)] px-3 py-1.5 text-sm font-medium text-white transition hover:opacity-90"
-            >
-              Let them in
-            </button>
-            <button
-              type="button"
-              data-testid="deny-button"
-              onClick={() => {
-                void (async () => {
-                  const data = await moderate('deny', waiting.identity ?? undefined);
-                  if (data) {
-                    setWaitingGuests((list) =>
-                      list.filter((w) => w.identity !== waiting.identity),
-                    );
-                    pushToast('Guest denied');
-                  }
-                })();
-              }}
-              className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary transition hover:text-text-primary"
-            >
-              Deny
-            </button>
-          </div>
-        ))}
-
-      {toasts.length > 0 && (
-        <div className="mt-4 space-y-2" aria-live="polite">
-          {toasts.map((toast) => (
-            <p
-              key={toast.id}
-              data-testid="room-toast"
-              className="rounded-lg border border-border px-3 py-2 text-sm text-text-secondary"
-            >
-              {toast.text}
-            </p>
-          ))}
-        </div>
-      )}
-
-      <div className="mt-5">
-        {displayedShare ? (
-          <div>
-            <ShareStage share={displayedShare} />
-            <div
-              className="mt-3 flex gap-3 overflow-x-auto pb-1"
-              data-testid="tile-strip"
-            >
-              {tileGrid(true)}
-            </div>
-          </div>
-        ) : (
-          <div
-            className="grid gap-3"
-            data-testid="room-grid"
-            style={{
-              gridTemplateColumns: `repeat(${layout.columns}, minmax(0, 1fr))`,
-            }}
-          >
-            {tileGrid(false)}
-          </div>
+            <span className="relative flex h-2 w-2">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-500 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-red-500" />
+            </span>
+            <span className="hidden sm:inline">Recording</span> {formatElapsed(recordElapsed)}
+          </span>
         )}
-      </div>
+        <span
+          className="flex shrink-0 items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-xs font-medium"
+          data-testid="connected-badge"
+          aria-label={badgeText}
+          title={badgeText}
+        >
+          <span
+            className={`h-1.5 w-1.5 rounded-full ${
+              badgeHealthy ? 'bg-emerald-400' : 'animate-pulse bg-amber-400'
+            }`}
+          />
+          <span className={badgeHealthy ? 'hidden sm:inline' : ''}>{badgeText}</span>
+        </span>
+      </header>
+
+      <main className="relative flex min-h-0 flex-1 flex-col px-2 sm:px-4">
+        <div ref={stageRef} className="relative min-h-0 flex-1">
+          {displayedShare ? (
+            <div className="flex h-full w-full flex-col gap-2 lg:flex-row">
+              <div className="min-h-0 min-w-0 flex-1">
+                <ShareStage share={displayedShare} />
+              </div>
+              <div
+                className="rm-strip flex h-24 shrink-0 gap-2 overflow-x-auto sm:h-28 lg:h-full lg:w-56 lg:flex-col lg:overflow-x-hidden lg:overflow-y-auto"
+                data-testid="tile-strip"
+              >
+                {tiles.map((tile) => (
+                  <div
+                    key={tile.identity}
+                    className="aspect-video h-full shrink-0 lg:h-auto lg:w-full"
+                  >
+                    <ParticipantTile view={tile} variant="strip" />
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : twoUp && featuredTile && cornerTile ? (
+            <div className="relative h-full w-full" data-testid="room-grid" data-layout="call">
+              <ParticipantTile view={featuredTile} />
+              <button
+                type="button"
+                onClick={() => setSelfFeatured((v) => !v)}
+                aria-label={`Swap: show ${selfFeatured ? cornerTile.name : 'yourself'} large`}
+                title="Tap to swap"
+                className={`absolute bottom-3 right-3 z-10 overflow-hidden rounded-xl shadow-2xl ring-1 ring-white/15 transition hover:ring-white/40 active:scale-[0.98] ${
+                  portrait
+                    ? 'aspect-[3/4] w-[30%] max-w-[9.5rem]'
+                    : 'aspect-video w-[24%] min-w-32 max-w-[16rem]'
+                }`}
+              >
+                <ParticipantTile view={cornerTile} variant="pip" />
+              </button>
+            </div>
+          ) : (
+            <div
+              className="flex h-full w-full flex-wrap content-center items-center justify-center gap-2"
+              data-testid="room-grid"
+              data-layout="grid"
+            >
+              {tiles.map((tile) => (
+                <div
+                  key={tile.identity}
+                  style={{ width: grid.tileWidth, height: grid.tileHeight }}
+                  className="shrink-0"
+                >
+                  <ParticipantTile view={tile} />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Notices and toasts float over the top of the stage, so
+            nothing ever pushes the video around. */}
+        <div className="pointer-events-none absolute inset-x-0 top-2 z-20 flex flex-col items-center gap-2 px-3">
+          {recordingAnnouncement && recordingStatus === 'recording' && (
+            <div className={`${noticeClass} border-red-500/40`} data-testid="recording-announcement" role="status">
+              <p className="min-w-0 flex-1 text-white/75">
+                <span className="font-medium text-white">This meeting is being recorded.</span>{' '}
+                Everyone in the meeting can see it. The recording belongs to the host and will
+                sit on the booking in their dashboard.
+              </p>
+              <button
+                type="button"
+                onClick={() => setRecordingAnnouncement(false)}
+                className={noticeButton}
+              >
+                Got it
+              </button>
+            </div>
+          )}
+
+          {connBadge === 'reconnecting' && (
+            <p
+              className={`${noticeClass} border-amber-400/40 text-white/80`}
+              data-testid="reconnecting-banner"
+              role="status"
+            >
+              Your connection dropped. Reconnecting now, you will be back in the meeting in a
+              moment, stay on this page.
+            </p>
+          )}
+
+          {camPausedNotice && (
+            <div className={`${noticeClass} border-amber-400/40`} data-testid="camera-paused-notice" role="status">
+              <p className="min-w-0 flex-1 text-white/80">
+                Your connection is slow, so your camera was turned off to keep your audio clear.
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  data-testid="camera-back-on"
+                  onClick={() => void toggleCamera()}
+                  className={noticeButton}
+                >
+                  Turn camera back on
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCamPausedNotice(false)}
+                  className="rounded-full px-2 py-1.5 text-xs text-white/60 transition hover:text-white"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
+          {hostMuted && (
+            <div className={noticeClass} data-testid="host-muted-notice" role="status">
+              <p className="min-w-0 flex-1 text-white/80">
+                The host muted you. You can unmute yourself whenever you are ready.
+              </p>
+              <button
+                type="button"
+                data-testid="host-unmute-button"
+                onClick={() => void unmuteAfterHostMute()}
+                className={noticeButton}
+              >
+                Unmute
+              </button>
+            </div>
+          )}
+
+          {props.isHost &&
+            waitingGuests.map((waiting) => (
+              <div
+                key={waiting.identity ?? 'the-guest'}
+                className={noticeClass}
+                data-testid="waiting-panel"
+                role="status"
+              >
+                <p className="min-w-0 flex-1 text-white/80">
+                  <span className="font-medium text-white">{waiting.name}</span> is waiting to
+                  join
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    data-testid="admit-button"
+                    onClick={() => void decideGuest(waiting, 'admit')}
+                    className="rounded-full bg-[var(--primary-color)] px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90"
+                  >
+                    Let them in
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="deny-button"
+                    onClick={() => void decideGuest(waiting, 'deny')}
+                    className={noticeButton}
+                  >
+                    Deny
+                  </button>
+                </div>
+              </div>
+            ))}
+
+          {alone && connBadge === 'connected' && (
+            <div
+              className={`${noticeClass} justify-center bg-zinc-900/70 text-center`}
+              data-testid="alone-notice"
+            >
+              <p className="text-white/75">You are the only one here.</p>
+              {props.isHost && props.inviteUrl && (
+                <button type="button" onClick={copyInvite} className={noticeButton}>
+                  {inviteCopied ? 'Link copied' : 'Copy invite link'}
+                </button>
+              )}
+            </div>
+          )}
+
+          <div className="flex w-full flex-col items-center gap-2" aria-live="polite">
+            {toasts.map((toast) => (
+              <p
+                key={toast.id}
+                data-testid="room-toast"
+                className="rm-rise pointer-events-auto w-fit max-w-md rounded-full bg-white/95 px-4 py-2 text-center text-sm font-medium text-zinc-900 shadow-xl"
+              >
+                {toast.text}
+              </p>
+            ))}
+          </div>
+        </div>
+      </main>
 
       <div
-        className="mt-5 flex flex-wrap items-center gap-2"
+        className="flex shrink-0 items-center justify-center gap-2 px-3 pt-3 sm:gap-3"
+        style={{ paddingBottom: 'max(env(safe-area-inset-bottom), 0.75rem)' }}
         data-testid="room-controls"
       >
-        <button
-          type="button"
+        <ControlButton
           data-testid="room-mic-toggle"
-          aria-pressed={micEnabled && !hostMuted}
-          aria-label={micEnabled ? 'Mute your microphone' : 'Unmute your microphone'}
+          aria-pressed={micLive}
+          label={micLive ? 'Mute your microphone' : 'Unmute your microphone'}
+          tone={micLive ? 'neutral' : 'off'}
           onClick={() => void toggleMic()}
-          className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium text-white transition ${
-            micEnabled && !hostMuted ? 'bg-black/40 hover:bg-black/60' : 'bg-red-600 hover:bg-red-500'
-          }`}
         >
-          {micEnabled && !hostMuted ? (
-            <Mic className="h-4 w-4" aria-hidden />
-          ) : (
-            <MicOff className="h-4 w-4" aria-hidden />
-          )}
-          {hostMuted ? 'Unmute' : micEnabled ? 'Mute' : 'Unmute'}
-        </button>
+          {micLive ? <Mic className="h-5 w-5" aria-hidden /> : <MicOff className="h-5 w-5" aria-hidden />}
+        </ControlButton>
 
-        <button
-          type="button"
+        <ControlButton
           data-testid="room-camera-toggle"
           aria-pressed={camEnabled}
-          aria-label={camEnabled ? 'Turn your camera off' : 'Turn your camera on'}
+          label={camEnabled ? 'Turn your camera off' : 'Turn your camera on'}
+          tone={camEnabled ? 'neutral' : 'off'}
           onClick={() => void toggleCamera()}
-          className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium text-white transition ${
-            camEnabled ? 'bg-black/40 hover:bg-black/60' : 'bg-red-600 hover:bg-red-500'
-          }`}
         >
-          {camEnabled ? (
-            <Video className="h-4 w-4" aria-hidden />
-          ) : (
-            <VideoOff className="h-4 w-4" aria-hidden />
-          )}
-          {camEnabled ? 'Camera on' : 'Camera off'}
-        </button>
+          {camEnabled ? <Video className="h-5 w-5" aria-hidden /> : <VideoOff className="h-5 w-5" aria-hidden />}
+        </ControlButton>
 
-        <button
-          type="button"
-          data-testid="room-share-toggle"
-          aria-pressed={localSharing}
-          aria-label={localSharing ? 'Stop sharing your screen' : 'Share your screen'}
-          onClick={() => void toggleShare()}
-          className={`flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium text-white transition ${
-            localSharing
-              ? 'bg-[var(--primary-color)] hover:opacity-90'
-              : 'bg-black/40 hover:bg-black/60'
-          }`}
-        >
-          {localSharing ? (
-            <MonitorX className="h-4 w-4" aria-hidden />
-          ) : (
-            <MonitorUp className="h-4 w-4" aria-hidden />
-          )}
-          {localSharing ? 'Stop sharing' : 'Share screen'}
-        </button>
+        {blurAvailable && (
+          <ControlButton
+            data-testid="room-blur-toggle"
+            aria-pressed={blurOn}
+            label={blurOn ? 'Turn background blur off' : 'Blur your background'}
+            tone={blurOn ? 'active' : 'neutral'}
+            onClick={toggleBlur}
+            className="hidden sm:flex"
+          >
+            <Sparkles className="h-5 w-5" aria-hidden />
+          </ControlButton>
+        )}
+
+        {canShare && (
+          <ControlButton
+            data-testid="room-share-toggle"
+            aria-pressed={localSharing}
+            label={localSharing ? 'Stop sharing your screen' : 'Share your screen'}
+            tone={localSharing ? 'active' : 'neutral'}
+            onClick={() => void toggleShare()}
+          >
+            {localSharing ? (
+              <MonitorX className="h-5 w-5" aria-hidden />
+            ) : (
+              <MonitorUp className="h-5 w-5" aria-hidden />
+            )}
+          </ControlButton>
+        )}
 
         {props.isHost && recordingStatus === 'recording' && (
-          <button
-            type="button"
+          <ControlButton
             data-testid="record-stop-button"
-            aria-label="Stop recording"
+            label={`Stop recording (${formatElapsed(recordElapsed)})`}
+            tone="danger"
             disabled={recordBusy}
             onClick={() => void recordAction('stop')}
-            className="flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-red-500 disabled:opacity-50"
+            className="hidden sm:flex"
           >
-            <span className="h-2.5 w-2.5 rounded-[3px] bg-white" aria-hidden />
-            Stop recording {formatElapsed(recordElapsed)}
-          </button>
+            <Square className="h-4 w-4 fill-current" aria-hidden />
+          </ControlButton>
         )}
         {props.isHost && recordingStatus === 'processing' && (
-          <button
-            type="button"
+          <ControlButton
             data-testid="record-processing-button"
+            label="Recording is finishing"
             disabled
-            className="flex items-center gap-2 rounded-lg bg-black/40 px-4 py-2.5 text-sm font-medium text-white opacity-60"
+            onClick={() => undefined}
+            className="hidden sm:flex"
           >
-            Recording is finishing...
-          </button>
+            <Circle className="h-4 w-4 animate-pulse fill-current text-red-400" aria-hidden />
+          </ControlButton>
         )}
-        {props.isHost &&
-          recordingStatus !== 'recording' &&
-          recordingStatus !== 'processing' &&
-          !confirmRecord && (
-            <button
-              type="button"
-              data-testid="record-start-button"
-              aria-label="Start recording this meeting"
-              disabled={recordBusy}
-              onClick={() => setConfirmRecord(true)}
-              className="flex items-center gap-2 rounded-lg bg-black/40 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-black/60 disabled:opacity-50"
-            >
-              <span className="h-2.5 w-2.5 rounded-full bg-red-500" aria-hidden />
-              Record
-            </button>
-          )}
-        {props.isHost && confirmRecord && (
-          <>
-            <span className="text-sm text-text-secondary">
-              Start recording? Everyone will see that recording is on.
-            </span>
-            <button
-              type="button"
-              data-testid="record-start-confirm"
-              disabled={recordBusy}
-              onClick={() => {
-                setConfirmRecord(false);
-                void recordAction('start');
-              }}
-              className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-red-500 disabled:opacity-50"
-            >
-              Start recording
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirmRecord(false)}
-              className="rounded-lg px-2 py-2 text-sm text-text-secondary transition hover:text-text-primary"
-            >
-              Cancel
-            </button>
-          </>
+        {props.isHost && recordingStatus !== 'recording' && recordingStatus !== 'processing' && (
+          <ControlButton
+            data-testid="record-start-button"
+            label="Start recording this meeting"
+            disabled={recordBusy}
+            onClick={() => setConfirmRecord(true)}
+            className="hidden sm:flex"
+          >
+            <Circle className="h-4 w-4 fill-red-500 text-red-500" aria-hidden />
+          </ControlButton>
         )}
 
-        <button
-          type="button"
-          data-testid="room-devices-toggle"
-          aria-expanded={devicesOpen}
-          aria-label="Choose microphone, camera, and speaker"
-          onClick={() => setDevicesOpen((v) => !v)}
-          className="flex items-center gap-2 rounded-lg bg-black/40 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-black/60"
-        >
-          <Settings2 className="h-4 w-4" aria-hidden />
-          Devices
-        </button>
+        <span className="mx-1 hidden h-8 w-px bg-white/10 sm:block" aria-hidden />
 
-        <button
-          type="button"
+        <ControlButton
           data-testid="people-toggle"
-          aria-expanded={peopleOpen}
-          aria-label="See who is in the meeting"
-          onClick={() => setPeopleOpen((v) => !v)}
-          className="flex items-center gap-2 rounded-lg bg-black/40 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-black/60"
+          aria-expanded={sheet === 'people'}
+          label={`People in the meeting (${tiles.length})`}
+          onClick={() => setSheet('people')}
         >
-          <Users className="h-4 w-4" aria-hidden />
-          People ({tiles.length})
-        </button>
+          <Users className="h-5 w-5" aria-hidden />
+          <span className="absolute -right-0.5 -top-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-zinc-700 px-1 text-[10px] font-semibold ring-2 ring-[#0b0b0d]">
+            {tiles.length}
+          </span>
+          {props.isHost && waitingGuests.length > 0 && (
+            <span className="absolute -left-0.5 -top-0.5 h-3 w-3 animate-pulse rounded-full bg-amber-400 ring-2 ring-[#0b0b0d]" />
+          )}
+        </ControlButton>
 
-        {props.isHost && props.inviteUrl && (
-          <button
-            type="button"
-            data-testid="invite-button"
-            aria-label="Copy the invite link for this meeting"
-            onClick={() => {
-              void navigator.clipboard
-                .writeText(props.inviteUrl ?? '')
-                .then(() => {
-                  setInviteCopied(true);
-                  pushToast('Invite link copied');
-                  setTimeout(() => setInviteCopied(false), 2000);
-                })
-                .catch(() => pushToast('Could not copy the invite link'));
-            }}
-            className="flex items-center gap-2 rounded-lg bg-black/40 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-black/60"
-          >
-            <Link2 className="h-4 w-4" aria-hidden />
-            {inviteCopied ? 'Copied' : 'Invite'}
-          </button>
-        )}
-
-        {props.isHost && !confirmMuteAll && (
-          <button
-            type="button"
-            data-testid="mute-all-button"
-            aria-label="Mute every other participant"
-            onClick={() => setConfirmMuteAll(true)}
-            className="flex items-center gap-2 rounded-lg bg-black/40 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-black/60"
-          >
-            <MicOff className="h-4 w-4" aria-hidden />
-            Mute all
-          </button>
-        )}
-        {props.isHost && confirmMuteAll && (
-          <>
-            <span className="text-sm text-text-secondary">Mute every guest?</span>
-            <button
-              type="button"
-              data-testid="mute-all-confirm"
-              onClick={() => void muteAll()}
-              className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-red-500"
-            >
-              Mute all
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirmMuteAll(false)}
-              className="rounded-lg px-2 py-2 text-sm text-text-secondary transition hover:text-text-primary"
-            >
-              Cancel
-            </button>
-          </>
-        )}
-
-        {props.isHost && !confirmEnd && (
-          <button
-            type="button"
-            data-testid="end-meeting-button"
-            aria-label="End the meeting for everyone"
-            onClick={() => setConfirmEnd(true)}
-            className="flex items-center gap-2 rounded-lg border border-red-600/60 px-4 py-2.5 text-sm font-medium text-red-400 transition hover:bg-red-600/20"
-          >
-            <PhoneOff className="h-4 w-4" aria-hidden />
-            End meeting
-          </button>
-        )}
-        {props.isHost && confirmEnd && (
-          <>
-            <span className="text-sm text-text-secondary">
-              End the meeting for everyone?
-            </span>
-            <button
-              type="button"
-              data-testid="end-meeting-confirm"
-              onClick={() => void endMeeting()}
-              className="rounded-lg bg-red-600 px-3 py-2 text-sm font-medium text-white transition hover:bg-red-500"
-            >
-              End meeting
-            </button>
-            <button
-              type="button"
-              onClick={() => setConfirmEnd(false)}
-              className="rounded-lg px-2 py-2 text-sm text-text-secondary transition hover:text-text-primary"
-            >
-              Cancel
-            </button>
-          </>
-        )}
+        <ControlButton
+          data-testid="more-toggle"
+          aria-expanded={sheet === 'more'}
+          label="More options"
+          onClick={() => setSheet('more')}
+        >
+          <MoreVertical className="h-5 w-5" aria-hidden />
+          {props.isHost && recordingStatus === 'recording' && (
+            <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full bg-red-500 ring-2 ring-[#0b0b0d] sm:hidden" />
+          )}
+        </ControlButton>
 
         <button
           type="button"
           data-testid="leave-button"
           aria-label="Leave the meeting"
+          title="Leave the meeting"
           onClick={onLeave}
-          className="ml-auto flex items-center gap-2 rounded-lg bg-red-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-red-500"
+          className="flex h-12 shrink-0 items-center gap-2 rounded-full bg-red-600 px-4 text-sm font-semibold text-white transition hover:bg-red-500 active:scale-95 sm:px-5"
         >
-          <PhoneOff className="h-4 w-4" aria-hidden />
-          Leave
+          <PhoneOff className="h-5 w-5" aria-hidden />
+          <span className="hidden sm:inline">Leave</span>
         </button>
       </div>
 
-      {peopleOpen && (
-        <div
-          className="mt-4 rounded-xl border border-border p-3"
-          data-testid="participant-list"
-        >
-          <p className="text-sm font-medium">People in this meeting</p>
-          <ul className="mt-2 space-y-2">
+      <BottomSheet
+        open={sheet === 'more'}
+        onClose={() => setSheet(null)}
+        title="More options"
+        className={ROOM_SHEET_CLASS}
+      >
+        <div className="space-y-1" data-testid="more-sheet">
+          {blurAvailable && (
+            <SheetRow
+              data-testid="more-blur"
+              aria-pressed={blurOn}
+              icon={<Sparkles className="h-4 w-4" aria-hidden />}
+              label="Blur my background"
+              detail={blurOn ? 'On. People see you, not your room.' : 'Off'}
+              onClick={toggleBlur}
+              trailing={<Switch on={blurOn} />}
+            />
+          )}
+          <SheetRow
+            data-testid="room-devices-toggle"
+            icon={<Settings2 className="h-4 w-4" aria-hidden />}
+            label="Devices"
+            detail="Microphone, camera, and speaker"
+            onClick={() => setSheet('devices')}
+          />
+          {props.isHost && recordingStatus === 'recording' && (
+            <SheetRow
+              data-testid="more-record-stop"
+              disabled={recordBusy}
+              icon={<Square className="h-3.5 w-3.5 fill-red-500 text-red-500" aria-hidden />}
+              label="Stop recording"
+              detail={`Recording for ${formatElapsed(recordElapsed)}`}
+              onClick={() => {
+                setSheet(null);
+                void recordAction('stop');
+              }}
+            />
+          )}
+          {props.isHost && recordingStatus === 'processing' && (
+            <SheetRow
+              disabled
+              icon={<Circle className="h-3.5 w-3.5 animate-pulse fill-red-400 text-red-400" aria-hidden />}
+              label="Recording is finishing"
+              detail="It will appear on the booking in your dashboard"
+              onClick={() => undefined}
+              trailing={<span />}
+            />
+          )}
+          {props.isHost && recordingStatus !== 'recording' && recordingStatus !== 'processing' && (
+            <SheetRow
+              data-testid="more-record"
+              disabled={recordBusy}
+              icon={<Circle className="h-3.5 w-3.5 fill-red-500 text-red-500" aria-hidden />}
+              label="Record this meeting"
+              detail="Everyone will see that recording is on"
+              onClick={() => {
+                setSheet(null);
+                setConfirmRecord(true);
+              }}
+            />
+          )}
+          {props.isHost && props.inviteUrl && (
+            <SheetRow
+              data-testid="invite-button"
+              icon={<Link2 className="h-4 w-4" aria-hidden />}
+              label={inviteCopied ? 'Invite link copied' : 'Copy invite link'}
+              detail="Anyone with the link gets their own seat"
+              onClick={copyInvite}
+              trailing={
+                inviteCopied ? <Check className="h-4 w-4 text-emerald-400" aria-hidden /> : undefined
+              }
+            />
+          )}
+          {props.isHost && (
+            <SheetRow
+              data-testid="mute-all-button"
+              icon={<MicOff className="h-4 w-4" aria-hidden />}
+              label="Mute everyone else"
+              detail="Guests can unmute themselves"
+              onClick={() => {
+                setSheet(null);
+                setConfirmMuteAll(true);
+              }}
+            />
+          )}
+          {props.isHost && (
+            <SheetRow
+              data-testid="end-meeting-button"
+              danger
+              icon={<PhoneOff className="h-4 w-4" aria-hidden />}
+              label="End meeting for everyone"
+              detail="Disconnects everyone and closes the room"
+              onClick={() => {
+                setSheet(null);
+                setConfirmEnd(true);
+              }}
+            />
+          )}
+        </div>
+      </BottomSheet>
+
+      <BottomSheet
+        open={sheet === 'people'}
+        className={ROOM_SHEET_CLASS}
+        onClose={() => setSheet(null)}
+        title={`People (${tiles.length})`}
+        footer={
+          props.isHost && tiles.length > 1 ? (
+            <button
+              type="button"
+              onClick={() => {
+                setSheet(null);
+                setConfirmMuteAll(true);
+              }}
+              className="flex w-full items-center justify-center gap-2 rounded-xl bg-bg-hover px-4 py-2.5 text-sm font-medium text-text-primary transition hover:bg-border"
+            >
+              <MicOff className="h-4 w-4" aria-hidden />
+              Mute everyone else
+            </button>
+          ) : undefined
+        }
+      >
+        <div data-testid="participant-list">
+          {props.isHost && waitingGuests.length > 0 && (
+            <div className="mb-4">
+              <p className="mb-2 text-xs font-medium uppercase tracking-wide text-text-muted">
+                Waiting to join
+              </p>
+              <ul className="space-y-2">
+                {waitingGuests.map((waiting) => (
+                  <li
+                    key={waiting.identity ?? 'the-guest'}
+                    className="flex items-center gap-2 rounded-xl bg-bg-hover px-3 py-2"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-sm font-medium">{waiting.name}</span>
+                    <button
+                      type="button"
+                      data-testid="people-admit"
+                      onClick={() => void decideGuest(waiting, 'admit')}
+                      className="rounded-full bg-[var(--primary-color)] px-3 py-1.5 text-xs font-medium text-white transition hover:opacity-90"
+                    >
+                      Let in
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="people-deny"
+                      onClick={() => void decideGuest(waiting, 'deny')}
+                      className="rounded-full border border-border px-3 py-1.5 text-xs text-text-secondary transition hover:text-text-primary"
+                    >
+                      Deny
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <p className="mb-2 text-xs font-medium uppercase tracking-wide text-text-muted">
+            In the meeting
+          </p>
+          <ul className="space-y-1">
             {tiles.map((tile) => (
               <li
                 key={tile.identity}
                 data-testid="participant-row"
                 data-identity={tile.identity}
-                className="flex flex-wrap items-center gap-2 text-sm"
+                className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl px-2 py-2"
               >
-                <span className="font-medium">{tile.name}</span>
-                <span className="rounded-full border border-border px-2 py-0.5 text-xs text-text-secondary">
-                  {roleFor(tile)}
+                <span
+                  aria-hidden
+                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-semibold text-white"
+                  style={{ backgroundColor: colorForIdentity(tile.identity) }}
+                >
+                  {initialsFor(tile.name)}
                 </span>
-                <span className="text-xs text-text-secondary">
-                  {tile.micMuted ? 'Muted' : 'Mic on'}
-                </span>
-                <span className="text-xs text-text-secondary">
-                  {tile.videoTrack ? 'Camera on' : 'Camera off'}
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-2">
+                    <span className="truncate text-sm font-medium">{tile.name}</span>
+                    <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] text-text-secondary">
+                      {roleFor(tile)}
+                    </span>
+                  </span>
+                  <span className="mt-0.5 flex items-center gap-2 text-xs text-text-muted">
+                    {tile.micMuted ? (
+                      <MicOff className="h-3.5 w-3.5 text-red-400" aria-hidden />
+                    ) : (
+                      <Mic className="h-3.5 w-3.5" aria-hidden />
+                    )}
+                    <span>{tile.micMuted ? 'Muted' : 'Mic on'}</span>
+                    {tile.videoTrack ? (
+                      <Video className="h-3.5 w-3.5" aria-hidden />
+                    ) : (
+                      <VideoOff className="h-3.5 w-3.5" aria-hidden />
+                    )}
+                    <span>{tile.videoTrack ? 'Camera on' : 'Camera off'}</span>
+                  </span>
                 </span>
                 {props.isHost && !tile.isLocal && (
-                  <>
-                    {!tile.micMuted && (
+                  <span className="flex items-center gap-1.5">
+                    {!tile.micMuted && confirmRemoveId !== tile.identity && (
                       <button
                         type="button"
                         data-testid="participant-mute"
@@ -1354,14 +1787,13 @@ export function MeetingRoom(props: MeetingRoomProps) {
                             sync();
                           })();
                         }}
-                        className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary transition hover:text-text-primary"
+                        className="rounded-full border border-border px-3 py-1.5 text-xs text-text-secondary transition hover:text-text-primary"
                       >
                         Mute
                       </button>
                     )}
                     {confirmRemoveId === tile.identity ? (
                       <>
-                        <span className="text-xs text-text-secondary">Remove them?</span>
                         <button
                           type="button"
                           data-testid="participant-remove-confirm"
@@ -1374,14 +1806,14 @@ export function MeetingRoom(props: MeetingRoomProps) {
                               sync();
                             })();
                           }}
-                          className="rounded-lg bg-red-600 px-2 py-1 text-xs font-medium text-white transition hover:bg-red-500"
+                          className="rounded-full bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-red-500"
                         >
-                          Remove
+                          Remove them
                         </button>
                         <button
                           type="button"
                           onClick={() => setConfirmRemoveId(null)}
-                          className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary transition hover:text-text-primary"
+                          className="rounded-full border border-border px-3 py-1.5 text-xs text-text-secondary transition hover:text-text-primary"
                         >
                           Cancel
                         </button>
@@ -1392,37 +1824,49 @@ export function MeetingRoom(props: MeetingRoomProps) {
                         data-testid="participant-remove"
                         data-identity={tile.identity}
                         onClick={() => setConfirmRemoveId(tile.identity)}
-                        className="rounded-lg border border-red-600/60 px-2 py-1 text-xs text-red-400 transition hover:bg-red-600/20"
+                        className="rounded-full border border-red-600/50 px-3 py-1.5 text-xs text-red-400 transition hover:bg-red-600/15"
                       >
                         Remove
                       </button>
                     )}
-                  </>
+                  </span>
                 )}
               </li>
             ))}
           </ul>
-          <p className="mt-2 text-xs text-text-secondary">
+          <p className="mt-3 text-xs text-text-muted">
             A guest the host mutes can unmute themselves at any time.
           </p>
         </div>
-      )}
+      </BottomSheet>
 
-      {devicesOpen && (
-        <div
-          className="mt-4 grid gap-3 sm:grid-cols-3"
-          data-testid="room-devices"
-        >
+      <BottomSheet
+        open={sheet === 'devices'}
+        className={ROOM_SHEET_CLASS}
+        onClose={() => setSheet(null)}
+        title="Devices"
+        description="Changes apply right away, without rejoining."
+      >
+        <div className="space-y-4" data-testid="room-devices">
+          {blurAvailable && (
+            <SheetRow
+              data-testid="devices-blur"
+              aria-pressed={blurOn}
+              icon={<Sparkles className="h-4 w-4" aria-hidden />}
+              label="Blur my background"
+              detail={blurOn ? 'On' : 'Off'}
+              onClick={toggleBlur}
+              trailing={<Switch on={blurOn} />}
+            />
+          )}
           <label className="block text-sm">
             <span className="text-text-secondary">Microphone</span>
             <select
               data-testid="room-device-mic"
               aria-label="Microphone"
               value={micId}
-              onChange={(e) =>
-                void switchDevice('audioinput', e.target.value)
-              }
-              className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text-primary"
+              onChange={(e) => void switchDevice('audioinput', e.target.value)}
+              className={selectClass}
             >
               <option value="">Browser default</option>
               {deviceLists.mics.map((d, i) => (
@@ -1438,10 +1882,8 @@ export function MeetingRoom(props: MeetingRoomProps) {
               data-testid="room-device-camera"
               aria-label="Camera"
               value={camId}
-              onChange={(e) =>
-                void switchDevice('videoinput', e.target.value)
-              }
-              className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text-primary"
+              onChange={(e) => void switchDevice('videoinput', e.target.value)}
+              className={selectClass}
             >
               <option value="">Browser default</option>
               {deviceLists.cams.map((d, i) => (
@@ -1457,10 +1899,8 @@ export function MeetingRoom(props: MeetingRoomProps) {
               data-testid="room-device-speaker"
               aria-label="Speaker"
               value={speakerId}
-              onChange={(e) =>
-                void switchDevice('audiooutput', e.target.value)
-              }
-              className="mt-1 w-full rounded-lg border border-border bg-bg px-3 py-2 text-sm text-text-primary"
+              onChange={(e) => void switchDevice('audiooutput', e.target.value)}
+              className={selectClass}
             >
               <option value="">Browser default</option>
               {deviceLists.speakers.map((d, i) => (
@@ -1469,8 +1909,48 @@ export function MeetingRoom(props: MeetingRoomProps) {
                 </option>
               ))}
             </select>
+            {deviceLists.speakers.length === 0 && (
+              <span className="mt-1 block text-xs text-text-muted">
+                This browser picks the speaker itself (Safari and Firefox do).
+              </span>
+            )}
           </label>
         </div>
+      </BottomSheet>
+
+      {confirmRecord && (
+        <ConfirmDialog
+          title="Start recording?"
+          body="Everyone in the meeting will see that recording is on. The recording will sit on the booking in your dashboard."
+          confirmLabel="Start recording"
+          confirmTestId="record-start-confirm"
+          busy={recordBusy}
+          onConfirm={() => {
+            setConfirmRecord(false);
+            void recordAction('start');
+          }}
+          onCancel={() => setConfirmRecord(false)}
+        />
+      )}
+      {confirmMuteAll && (
+        <ConfirmDialog
+          title="Mute everyone else?"
+          body="Every guest's microphone is muted. They can unmute themselves when they need to speak."
+          confirmLabel="Mute all"
+          confirmTestId="mute-all-confirm"
+          onConfirm={() => void muteAll()}
+          onCancel={() => setConfirmMuteAll(false)}
+        />
+      )}
+      {confirmEnd && (
+        <ConfirmDialog
+          title="End the meeting for everyone?"
+          body="Everyone is disconnected and the room closes."
+          confirmLabel="End meeting"
+          confirmTestId="end-meeting-confirm"
+          onConfirm={() => void endMeeting()}
+          onCancel={() => setConfirmEnd(false)}
+        />
       )}
 
       <div ref={audioBoxRef} className="hidden" aria-hidden />

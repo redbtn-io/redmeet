@@ -1,6 +1,7 @@
 {
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1045.0",
+    "@livekit/track-processors": "^0.8.3",
     "@redbtn/redauth": "1.7.0",
     "@redbtn/redlabel": "0.1.0",
     "@redbtn/redstyle": "0.6.2",
@@ -27,7 +28,9 @@
   "name": "web",
   "private": true,
   "scripts": {
+    "prebuild": "node scripts/copy-mediapipe.mjs",
     "build": "next build",
+    "predev": "node scripts/copy-mediapipe.mjs",
     "dev": "next dev",
     "start": "next start",
     "typecheck": "tsc --noEmit",

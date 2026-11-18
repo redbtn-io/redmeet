@@ -7,3 +7,6 @@ dist/
 .env.local
 .env.*.local
 .DS_Store
+# MediaPipe wasm for background blur, copied from node_modules at
+# build time by web/scripts/copy-mediapipe.mjs.
+web/public/mediapipe/wasm/
