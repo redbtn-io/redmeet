@@ -21,6 +21,66 @@ export function gridLayout(count: number): GridLayout {
   return { columns, rows: Math.ceil(n / columns) };
 }
 
+export interface FitGrid {
+  columns: number;
+  rows: number;
+  /** Pixel size of every tile, already at the requested aspect. */
+  tileWidth: number;
+  tileHeight: number;
+}
+
+/**
+ * The tile grid that fills a stage best: try every column count, size
+ * each tile to the largest box at `aspect` (width / height) that fits
+ * its cell, and keep the column count with the biggest tiles. This is
+ * what makes two people on a phone stack vertically and two people on
+ * a laptop sit side by side, from the same rule. A stage with no size
+ * yet (first render) yields zero sized tiles, never NaN.
+ */
+export function fitGrid(
+  count: number,
+  width: number,
+  height: number,
+  aspect: number,
+  gap = 8,
+): FitGrid {
+  const n = Math.max(1, Math.floor(count) || 1);
+  const w = Math.max(0, width);
+  const h = Math.max(0, height);
+  const a = aspect > 0 ? aspect : 16 / 9;
+  let best: FitGrid = { columns: 1, rows: n, tileWidth: 0, tileHeight: 0 };
+  let bestArea = -1;
+  for (let columns = 1; columns <= n; columns++) {
+    const rows = Math.ceil(n / columns);
+    const cellW = (w - gap * (columns - 1)) / columns;
+    const cellH = (h - gap * (rows - 1)) / rows;
+    if (cellW <= 0 || cellH <= 0) continue;
+    const tileWidth = Math.min(cellW, cellH * a);
+    const tileHeight = tileWidth / a;
+    const area = tileWidth * tileHeight;
+    // Strictly greater: on a tie the fewer columns (bigger rows) win.
+    if (area > bestArea + 0.5) {
+      bestArea = area;
+      best = {
+        columns,
+        rows,
+        tileWidth: Math.floor(tileWidth),
+        tileHeight: Math.floor(tileHeight),
+      };
+    }
+  }
+  return best;
+}
+
+/**
+ * The tile shape for a stage: landscape video tiles on a landscape
+ * stage, taller tiles on a portrait one (a phone held upright), where
+ * 16:9 tiles would waste most of the screen.
+ */
+export function tileAspectFor(width: number, height: number): number {
+  return height > width ? 3 / 4 : 16 / 9;
+}
+
 /** "Smoke Guest" -> "SG", "Host" -> "HO", "" -> "?". */
 export function initialsFor(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);

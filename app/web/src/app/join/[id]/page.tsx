@@ -65,7 +65,7 @@ function Shell({
   return (
     <div className="min-h-screen bg-bg pb-10 text-text-primary" style={style}>
       <header className="border-b border-border">
-        <div className="mx-auto flex w-full max-w-3xl items-center justify-between px-6 py-4">
+        <div className="mx-auto flex w-full max-w-4xl items-center justify-between px-4 py-3 sm:px-6 sm:py-4">
           <Link href="/" className="flex items-center gap-2 transition hover:opacity-80">
             <img src="/icons/redbtn-logo.png" alt="" className="h-7 w-7 rounded-md" />
             <span className="text-sm font-medium">redMeet</span>
@@ -73,7 +73,7 @@ function Shell({
           <ThemeToggle />
         </div>
       </header>
-      <main className="mx-auto w-full max-w-3xl px-6 pt-10">{children}</main>
+      <main className="mx-auto w-full max-w-4xl px-3 pt-4 sm:px-6 sm:pt-10">{children}</main>
     </div>
   );
 }

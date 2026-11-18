@@ -3,12 +3,55 @@ import { describe, expect, it } from 'vitest';
 import {
   colorForIdentity,
   displacedShareNotice,
+  fitGrid,
   gridLayout,
   initialsFor,
   pickFallbackDevice,
   resolveDisplayedShare,
+  tileAspectFor,
   type ShareRef,
 } from './room-ui';
+
+describe('fitGrid', () => {
+  it('stacks two people on a portrait phone stage', () => {
+    const g = fitGrid(2, 390, 640, tileAspectFor(390, 640));
+    expect(g.columns).toBe(1);
+    expect(g.rows).toBe(2);
+  });
+
+  it('puts two people side by side on a laptop stage', () => {
+    const g = fitGrid(2, 1280, 640, tileAspectFor(1280, 640));
+    expect(g.columns).toBe(2);
+    expect(g.rows).toBe(1);
+  });
+
+  it('never returns a tile bigger than the stage', () => {
+    for (let n = 1; n <= 12; n++) {
+      const g = fitGrid(n, 800, 500, 16 / 9, 8);
+      expect(g.columns * g.tileWidth + (g.columns - 1) * 8).toBeLessThanOrEqual(800);
+      expect(g.rows * g.tileHeight + (g.rows - 1) * 8).toBeLessThanOrEqual(500);
+      expect(g.columns * g.rows).toBeGreaterThanOrEqual(n);
+    }
+  });
+
+  it('yields zero sized tiles, not NaN, before the stage has a size', () => {
+    const g = fitGrid(3, 0, 0, 16 / 9);
+    expect(g.tileWidth).toBe(0);
+    expect(g.tileHeight).toBe(0);
+  });
+
+  it('keeps the requested aspect', () => {
+    const g = fitGrid(4, 1200, 800, 16 / 9);
+    expect(Math.abs(g.tileWidth / g.tileHeight - 16 / 9)).toBeLessThan(0.05);
+  });
+});
+
+describe('tileAspectFor', () => {
+  it('uses taller tiles on a portrait stage', () => {
+    expect(tileAspectFor(390, 700)).toBe(3 / 4);
+    expect(tileAspectFor(1200, 700)).toBe(16 / 9);
+  });
+});
 
 describe('gridLayout', () => {
   it('lays out 1 to 10 tiles in a readable grid', () => {
