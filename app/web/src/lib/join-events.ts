@@ -73,6 +73,12 @@ export function logMeetingEvent(event: MeetingEvent, fields: MeetingEventFields 
  *   admission_denied     waiting room, the host said no
  *   livekit_unreachable  the media server could not be reached or asked
  *   browser_blocked      the browser blocked camera or mic, or has none
+ *   device_enable_failed connected, then the mic or camera would not
+ *                        turn on (Nov 20, 2026; detail carries the
+ *                        device and the error name only:
+ *                        mic:NotAllowedError, camera:NotReadableError)
+ *   post_connect_failed  connected, then something else in the join
+ *                        setup threw (detail carries the error name)
  */
 export const JOIN_FAILURE_TYPES = [
   'bad_token',
@@ -84,6 +90,8 @@ export const JOIN_FAILURE_TYPES = [
   'admission_denied',
   'livekit_unreachable',
   'browser_blocked',
+  'device_enable_failed',
+  'post_connect_failed',
 ] as const;
 
 export type JoinFailureType = (typeof JOIN_FAILURE_TYPES)[number];

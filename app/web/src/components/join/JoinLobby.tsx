@@ -15,6 +15,15 @@ import {
   loadDeviceMemory,
   saveDeviceMemory,
 } from '@/lib/device-memory';
+import {
+  deviceFailureDetail,
+  deviceFailureNotice,
+  enableJoinDevice,
+  errorNameOf,
+  failureTypeForUncodedThrow,
+  type DeviceFailure,
+  type JoinPhase,
+} from '@/lib/join-devices';
 import { colorForIdentity, initialsFor } from '@/lib/room-ui';
 import { MeetingRoom } from './MeetingRoom';
 
@@ -63,6 +72,13 @@ import { MeetingRoom } from './MeetingRoom';
  * browser blocked the camera or mic, a connect died for
  * good. Those reports are the client half of the failure
  * vocabulary in the server logs.
+ *
+ * The Nov 20, 2026 fix: a device that will not turn on
+ * after a successful connect no longer ends the join. The
+ * person joins with the device off, the failure is
+ * reported as device_enable_failed with the device and
+ * the error name, and only a connect that itself fails is
+ * reported as livekit_unreachable.
  */
 
 export interface JoinLobbyProps {
@@ -197,6 +213,7 @@ export function JoinLobby(props: JoinLobbyProps) {
   function reportClientEvent(
     kind: 'joined' | 'left' | 'failure',
     failureType?: string,
+    detail?: string,
   ) {
     void fetch(`/api/public/bookings/${bookingId}/join-events`, {
       method: 'POST',
@@ -206,6 +223,7 @@ export function JoinLobby(props: JoinLobbyProps) {
         ...(guestKey() ? { g: guestKey() } : {}),
         kind,
         ...(failureType ? { failureType } : {}),
+        ...(detail ? { detail } : {}),
       }),
       keepalive: kind === 'left',
     }).catch(() => undefined);
@@ -558,6 +576,11 @@ export function JoinLobby(props: JoinLobbyProps) {
     setJoinError(null);
     intentionalLeaveRef.current = false;
     setScreen('connecting');
+    // Which step is running when a throw lands in the catch
+    // decides what the throw means: before connect resolves
+    // it is the media server, after it, it is not (the Nov
+    // 20, 2026 fix, see lib/join-devices).
+    let phase: JoinPhase = 'mint';
     try {
       const minted = await mintToken();
       stopPreview();
@@ -612,7 +635,9 @@ export function JoinLobby(props: JoinLobbyProps) {
         );
         setScreen('failed');
       });
+      phase = 'connect';
       await room.connect(minted.url, minted.token);
+      phase = 'setup';
       if (speakerId) {
         try {
           await room.switchActiveDevice('audiooutput', speakerId);
@@ -621,8 +646,24 @@ export function JoinLobby(props: JoinLobbyProps) {
           // the system default keeps working.
         }
       }
-      if (useMic) await room.localParticipant.setMicrophoneEnabled(true);
-      setJoinNotice(null);
+      // Connected: the join has happened, and nothing from
+      // here on may tear it down (the Nov 20, 2026 lesson: a
+      // guest whose mic would not turn on was disconnected
+      // four times and told the infrastructure was down).
+      // Each device is enabled on its own through the helper
+      // in lib/join-devices, which never throws: a failure is
+      // reported under its own failure type and named in the
+      // notice the room opens with, and the person joins
+      // with that device off.
+      const deviceFailures: DeviceFailure[] = [];
+      if (useMic) {
+        const failure = await enableJoinDevice(room.localParticipant, 'mic');
+        if (failure) {
+          deviceFailures.push(failure);
+          reportClientEvent('failure', 'device_enable_failed', deviceFailureDetail(failure));
+        }
+      }
+      let blurFailed = false;
       if (useCam && blurOn && blurAvailable) {
         // Blur from the very first published frame: the camera
         // is created WITH the processor, never blurred after the
@@ -634,18 +675,44 @@ export function JoinLobby(props: JoinLobbyProps) {
         } catch {
           await room.localParticipant.setCameraEnabled(false).catch(() => undefined);
           saveBlurPreference(false);
-          setJoinNotice(
-            'Background blur could not start, so your camera is off. Turn it on when you are ready to be seen without blur.',
-          );
+          blurFailed = true;
         }
       } else if (useCam) {
-        await room.localParticipant.setCameraEnabled(true);
+        const failure = await enableJoinDevice(room.localParticipant, 'camera');
+        if (failure) {
+          deviceFailures.push(failure);
+          reportClientEvent('failure', 'device_enable_failed', deviceFailureDetail(failure));
+        }
       }
+      const notices: string[] = [];
+      const deviceNotice = deviceFailureNotice(deviceFailures);
+      if (deviceNotice) notices.push(deviceNotice);
+      if (blurFailed) {
+        notices.push(
+          'Background blur could not start, so your camera is off. Turn it on when you are ready to be seen without blur.',
+        );
+      }
+      setJoinNotice(notices.length ? notices.join(' ') : null);
       setRoomNonce((n) => n + 1);
       setScreen('inroom');
       reportJoinedOnce();
     } catch (error) {
       const code = (error as { code?: string })?.code ?? '';
+      if (!code && failureTypeForUncodedThrow(phase) === 'post_connect_failed') {
+        // Connected, then something in the setup threw that
+        // the per-device guards did not own. The room stays
+        // up: the person is in the meeting, told in plain
+        // words, and the failure is logged as itself, never
+        // as the media server being unreachable.
+        reportClientEvent('failure', 'post_connect_failed', errorNameOf(error));
+        setJoinNotice(
+          'You are in the meeting, but something went wrong while finishing setup. If your camera or mic looks off, use the buttons below to turn them on.',
+        );
+        setRoomNonce((n) => n + 1);
+        setScreen('inroom');
+        reportJoinedOnce();
+        return;
+      }
       void roomRef.current?.disconnect().catch(() => undefined);
       roomRef.current = null;
       if (code === 'room_full') {
@@ -694,10 +761,14 @@ export function JoinLobby(props: JoinLobbyProps) {
       } else {
         // The mint answered but the connect itself failed:
         // the meeting infrastructure could not be reached.
-        // Plain words and a retry, the redChat voice style
-        // (story 3.5.4). The client reports it too (Epic 5),
-        // so an unreachable media server is visible in the
-        // logs as itself, not as a pile of mint successes.
+        // Post-connect throws never reach this branch (the
+        // guard at the top of the catch keeps the room and
+        // reports post_connect_failed), so unreachable here
+        // means the connect, and only the connect. Plain
+        // words and a retry, the redChat voice style (story
+        // 3.5.4). The client reports it too (Epic 5), so an
+        // unreachable media server is visible in the logs as
+        // itself, not as a pile of mint successes.
         reportClientEvent('failure', 'livekit_unreachable');
         setFailedMessage(
           'Meeting infrastructure is unreachable right now. Check your connection, then try again.',

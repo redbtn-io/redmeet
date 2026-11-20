@@ -402,6 +402,34 @@ describe.skipIf(!TEST_URI)('meeting settings and ops (Epic 5)', () => {
       });
       expect(blocked.status).toBe(204);
 
+      // Nov 20, 2026: the device failure type carries its
+      // dictated detail (device:error name) into the log line.
+      const device = await call({
+        t: booking.guestJoinToken,
+        kind: 'failure',
+        failureType: 'device_enable_failed',
+        detail: 'mic:NotAllowedError',
+      });
+      expect(device.status).toBe(204);
+
+      const postConnect = await call({
+        t: booking.guestJoinToken,
+        kind: 'failure',
+        failureType: 'post_connect_failed',
+        detail: 'TypeError',
+      });
+      expect(postConnect.status).toBe(204);
+
+      // A detail outside the dictated shape is never logged
+      // as sent: the line falls back to the plain marker.
+      const forged = await call({
+        t: booking.guestJoinToken,
+        kind: 'failure',
+        failureType: 'device_enable_failed',
+        detail: 'mic:NotAllowedError because the user said no',
+      });
+      expect(forged.status).toBe(204);
+
       const joined = await call({ t: booking.guestJoinToken, kind: 'joined' });
       expect(joined.status).toBe(204);
 
@@ -421,6 +449,27 @@ describe.skipIf(!TEST_URI)('meeting settings and ops (Epic 5)', () => {
     expect(
       parsed.some((p) => p.event === 'join_failed' && p.type === 'browser_blocked'),
     ).toBe(true);
+    expect(
+      parsed.some(
+        (p) =>
+          p.event === 'join_failed' &&
+          p.type === 'device_enable_failed' &&
+          p.detail === 'mic:NotAllowedError',
+      ),
+    ).toBe(true);
+    expect(
+      parsed.some(
+        (p) =>
+          p.event === 'join_failed' &&
+          p.type === 'post_connect_failed' &&
+          p.detail === 'TypeError',
+      ),
+    ).toBe(true);
+    // Exactly one device line carries the fallback marker:
+    // the forged detail was not logged as sent.
+    expect(
+      parsed.filter((p) => p.type === 'device_enable_failed' && p.detail === 'client_report'),
+    ).toHaveLength(1);
     expect(parsed.some((p) => p.event === 'participant_joined')).toBe(true);
     expect(JSON.stringify(parsed)).not.toContain(booking.guestJoinToken!);
   });
